@@ -1,0 +1,46 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "compilar RustOS",
+			"type": "shell",
+			"command": "bash",
+			"args": [
+				"${workspaceFolder}/compilar.sh"
+			],
+			"problemMatcher": []
+		},
+		{
+			"label": "preparar firmware UEFI",
+			"type": "process",
+			"command": "cp",
+			"args": [
+				"/usr/share/OVMF/OVMF_CODE_4M.fd",
+				"/usr/share/OVMF/OVMF_VARS_4M.fd",
+				"${workspaceFolder}/"
+			],
+			"problemMatcher": []
+		},
+		{
+			"label": "executar RustOS no QEMU",
+			"type": "process",
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			},
+			"command": "qemu-system-x86_64",
+			"args": [
+				"-machine", "q35",
+				"-m", "256M",
+				"-drive", "if=pflash,format=raw,unit=0,readonly=on,file=${workspaceFolder}/OVMF_CODE_4M.fd",
+				"-drive", "if=pflash,format=raw,unit=1,file=${workspaceFolder}/OVMF_VARS_4M.fd",
+				"-cdrom", "${workspaceFolder}/RustOS_Beta_v0.1_Construcao_0.1.2026.iso"
+			],
+			"dependsOn": [
+				"compilar RustOS",
+				"preparar firmware UEFI"
+			],
+			"problemMatcher": []
+		}
+	]
+}
