@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
+# Nome: RustOS Beta
+# Versao: v0.1
+# Construcao: 0.2.2026
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE="${ROOT_DIR}/inicio/inimin.rs"
+KERNEL_SOURCE="${ROOT_DIR}/inicio/inicio.rs"
 EFI_BINARY="${ROOT_DIR}/inicio/EFI/BOOT/BOOTX64.EFI"
+KERNEL_BINARY="${ROOT_DIR}/inicio/inicio.so"
 EFI_IMAGE="${ROOT_DIR}/inicio/inicio.img"
-ISO="${ROOT_DIR}/RustOS_Beta_v0.1_Construcao_0.1.2026.iso"
+ISO="${ROOT_DIR}/RustOS_Beta_v0.1_Construcao_0.2.2026.iso"
 PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 export PATH
 
@@ -25,6 +30,7 @@ rm -f \
 	"${ISO}" \
 	"${EFI_IMAGE}" \
 	"${EFI_BINARY}" \
+	"${KERNEL_BINARY}" \
 	"${ROOT_DIR}/inicio/EFI/BOOT/BOOTX64.pdb" \
 	"${ROOT_DIR}/inicio/inimin.efi" \
 	"${ROOT_DIR}/inicio/inimin.pdb" \
@@ -39,12 +45,16 @@ mkdir -p "$(dirname "${EFI_BINARY}")"
 rustc --edition=2021 --target x86_64-unknown-uefi \
 	-C panic=abort -C opt-level=s -C debuginfo=0 \
 	-o "${EFI_BINARY}" "${SOURCE}"
+rustc --edition=2021 --target x86_64-unknown-uefi \
+	-C panic=abort -C opt-level=s -C debuginfo=0 \
+	-o "${KERNEL_BINARY}" "${KERNEL_SOURCE}"
 
 truncate -s 4M "${EFI_IMAGE}"
 mkfs.vfat -F 12 -n RUSTOS "${EFI_IMAGE}" >/dev/null
 mmd -i "${EFI_IMAGE}" ::/EFI
 mmd -i "${EFI_IMAGE}" ::/EFI/BOOT
 mcopy -i "${EFI_IMAGE}" "${EFI_BINARY}" ::/EFI/BOOT/BOOTX64.EFI
+mcopy -i "${EFI_IMAGE}" "${KERNEL_BINARY}" ::/inicio.so
 
 genisoimage -quiet -o "${ISO}" -V RUSTOS \
 	-c boot.catalog \

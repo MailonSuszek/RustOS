@@ -2,7 +2,7 @@
 
 **Nome:** RustOS Beta  
 **Versao:** v0.1  
-**Construcao:** 0.1.2026  
+**Construcao:** 0.2.2026  
 **Arquitetura:** x86-64  
 **Boot:** UEFI
 
@@ -10,12 +10,14 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 
 ## Estrutura
 
-- `inicio/inimin.rs`: codigo Rust do primeiro aplicativo de boot.
+- `inicio/inimin.rs`: carregador UEFI; mostra “Bem vindo ao RustOS Beta”, espera 2 segundos e transfere o controle para `inicio.so` usando `LoadImage` e `StartImage`.
+- `inicio/inicio.rs`: segundo estagio UEFI; seleciona o modo grafico 640x480, limpa a tela para preto e mantem o firmware UEFI ativo.
 - `inicio/EFI/BOOT/BOOTX64.EFI`: executavel UEFI compilado para x86-64.
-- `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI`.
-- `compilar.sh`: compila o aplicativo e gera a imagem FAT e a ISO.
+- `inicio/inicio.so`: segundo estagio compilado para UEFI. Apesar da extensao `.so`, e um executavel PE/COFF UEFI, nao uma biblioteca ELF Linux.
+- `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI` e `inicio.so` na raiz.
+- `compilar.sh`: compila os dois estagios UEFI e gera a imagem FAT e a ISO.
 - `.vscode/tasks.json`: tarefas para compilar e executar no QEMU.
-- `RustOS_Beta_v0.1_Construcao_0.1.2026.iso`: imagem ISO gerada na raiz do projeto.
+- `RustOS_Beta_v0.1_Construcao_0.2.2026.iso`: imagem ISO gerada na raiz do projeto.
 
 Dentro da ISO, a imagem de boot fica em `INICIO/INICIO.IMG`; o `genisoimage` tambem cria o catalogo El Torito `BOOT.CAT` para o firmware UEFI.
 
@@ -44,7 +46,7 @@ Na raiz do projeto, execute:
 bash compilar.sh
 ```
 
-O script remove as geracoes anteriores e recria o executavel UEFI, `inicio/inicio.img` e a ISO na raiz.
+O script remove as geracoes anteriores e recria os dois executaveis UEFI, `inicio/inicio.img` e a ISO na raiz.
 
 ## Executar no QEMU
 
