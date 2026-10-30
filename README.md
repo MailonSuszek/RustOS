@@ -2,7 +2,7 @@
 
 **Nome:** RustOS Beta  
 **Versao:** v0.1  
-**Construcao:** 0.3.2026  
+**Construcao:** 0.4.2026<br>
 **Arquitetura:** x86-64  
 **Boot:** UEFI
 
@@ -14,13 +14,15 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `inicio/inicio.rs`: segundo estagio UEFI; configura o framebuffer, encontra `nucleo/Rust` na ISO 9660 via Block I/O, carrega seus segmentos ELF e encerra os servicos UEFI antes de transferir o controle ao nucleo.
 - `inicio/EFI/BOOT/BOOTX64.EFI`: executavel UEFI compilado para x86-64.
 - `inicio/inicio.so`: segundo estagio compilado para UEFI. Apesar da extensao `.so`, e um executavel PE/COFF UEFI, nao uma biblioteca ELF Linux.
-- `nucleo/nucleo.rs`: codigo-fonte do nucleo freestanding x86-64; escreve duas linhas diretamente no framebuffer.
+- `nucleo/nucleo.rs`: codigo-fonte do nucleo freestanding x86-64.
+- `nucleo/segurança/quando.rs`: orquestra em ordem as etapas de exibicao do nucleo para evitar execucao fora de sequencia.
+- `nucleo/memoria/enderecos.rs`: interpreta o mapa UEFI recebido do carregador e lista os intervalos de RAM com seu uso.
 - `nucleo/Rust`: executavel ELF independente, produzido a partir de `nucleo/nucleo.rs` e incluido na pasta `NUCLEO` da ISO 9660.
 - `nucleo/linker.ld`: posiciona o nucleo ELF na memoria fisica a partir de 1 MiB.
 - `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI` e `inicio.so` na raiz.
 - `compilar.sh`: compila os estagios UEFI e o nucleo freestanding, e gera a imagem FAT e a ISO.
 - `.vscode/tasks.json`: tarefas para compilar e executar no QEMU.
-- `RustOS_Beta_v0.1_Construcao_0.3.2026.iso`: imagem ISO gerada na raiz do projeto.
+- `RustOS_Beta_v0.1_Construcao_0.4.2026.iso`: imagem ISO gerada na raiz do projeto.
 
 Os estagios sao binarios separados: o firmware inicia `BOOTX64.EFI`, que carrega `inicio.so` de `inicio.img`; `inicio.so` procura e carrega `nucleo/Rust` diretamente dos setores da ISO 9660. O nucleo recebe do carregador os dados do framebuffer e, apos a transferencia, executa sem os servicos de boot UEFI.
 
@@ -37,9 +39,13 @@ O nome `NUCLEO/RUST` pode aparecer como `NUCLEO/RUST.;1` ao listar a ISO, devido
 Na tela, o nucleo mostra:
 
 ```text
-{1} RustOS Beta v0.1 Construção 0.3.2026
+{1} RustOS Beta v0.1 Construção 0.4.2026
 {2} Caminho: nucleo/Rust
+{3} Organização de segurança de execução
+{4} Lista de endereços da memoria RAM
 ```
+
+As linhas seguintes mostram cada intervalo de RAM com enderecos inicial/final e classificacao em colunas de largura fixa, espacadas uniformemente a cada 10 pixels e com uma pausa de 25 ms entre informacoes; a lista rola a tela quando necessario. As regioes UEFI convencionais sao indicadas como livres e as demais como usadas ou reservadas conforme seu tipo.
 
 ## Requisitos
 

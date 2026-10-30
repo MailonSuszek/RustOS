@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.3.2026
+// Construcao: 0.4.2026
 #![no_std]
 #![no_main]
 
@@ -16,6 +16,8 @@ const ALLOCATE_ADDRESS: u32 = 2;
 const LOADER_CODE: u32 = 1;
 const LOADER_DATA: u32 = 2;
 const PAGE_SIZE: usize = 4096;
+const MEMORY_DESCRIPTOR_VERSION: u32 = 1;
+const MEMORY_DESCRIPTOR_MIN_SIZE: usize = 40;
 const ISO_BLOCK_SIZE: usize = 2048;
 const MAX_KERNEL_SIZE: usize = 64 * 1024 * 1024;
 const BUFFER_TOO_SMALL: Status = (1usize << (usize::BITS - 1)) | 5;
@@ -186,6 +188,15 @@ struct BootInfo {
 	height: usize,
 	pixels_per_scan_line: usize,
 	pixel_format: u32,
+	memory_map: *const u8,
+	memory_map_size: usize,
+	memory_descriptor_size: usize,
+}
+
+struct MemoryMapInfo {
+	buffer: *const u8,
+	size: usize,
+	descriptor_size: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -220,7 +231,7 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 			halt();
 		}
 		let boot_services = &mut *boot_services;
-		let boot_info = configure_frame_buffer(boot_services);
+		let mut boot_info = configure_frame_buffer(boot_services);
 		let (block_io, kernel_file) = find_kernel_file(boot_services);
 		let (kernel_buffer, kernel_size, kernel_pages) =
 			read_kernel_file(boot_services, block_io, kernel_file);
@@ -230,7 +241,10 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 			halt();
 		}
 
-		exit_boot_services(boot_services, image_handle);
+		let memory_map = exit_boot_services(boot_services, image_handle);
+		boot_info.memory_map = memory_map.buffer;
+		boot_info.memory_map_size = memory_map.size;
+		boot_info.memory_descriptor_size = memory_map.descriptor_size;
 		core::arch::asm!("cli", options(nomem, nostack));
 		let entry: extern "sysv64" fn(*const BootInfo) -> ! =
 			core::mem::transmute(entry);
@@ -249,7 +263,10 @@ fn halt() -> ! {
 	}
 }
 
-unsafe fn exit_boot_services(boot_services: &mut BootServices, image_handle: Handle) {
+unsafe fn exit_boot_services(
+	boot_services: &mut BootServices,
+	image_handle: Handle,
+) -> MemoryMapInfo {
 	let mut map_buffer: *mut c_void = core::ptr::null_mut();
 	let mut map_capacity = 64 * 1024;
 	if (boot_services.allocate_pool)(LOADER_DATA, map_capacity, &mut map_buffer) != SUCCESS
@@ -292,9 +309,18 @@ unsafe fn exit_boot_services(boot_services: &mut BootServices, image_handle: Han
 		if status != SUCCESS {
 			halt();
 		}
+		if descriptor_version != MEMORY_DESCRIPTOR_VERSION
+			|| descriptor_size < MEMORY_DESCRIPTOR_MIN_SIZE
+		{
+			halt();
+		}
 		let status = (boot_services.exit_boot_services)(image_handle, map_key);
 		if status == SUCCESS {
-			return;
+			return MemoryMapInfo {
+				buffer: map_buffer.cast(),
+				size: map_size,
+				descriptor_size,
+			};
 		}
 		if status != INVALID_PARAMETER {
 			halt();
@@ -376,6 +402,9 @@ unsafe fn configure_frame_buffer(boot_services: &mut BootServices) -> BootInfo {
 		height,
 		pixels_per_scan_line: stride,
 		pixel_format: info.pixel_format,
+		memory_map: core::ptr::null(),
+		memory_map_size: 0,
+		memory_descriptor_size: 0,
 	}
 }
 

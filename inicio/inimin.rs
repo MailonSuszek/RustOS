@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.3.2026
+// Construcao: 0.4.2026
 #![no_std]
 #![no_main]
 
