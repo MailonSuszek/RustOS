@@ -1,10 +1,10 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.7.2026
+// Construcao: 0.8.2026
 // Funcao: Configura o mapeamento virtual identidade e as protecoes de paginas do nucleo.
 use core::ptr;
 
-use super::BootInfo;
+use super::{mapa_memoria, BootInfo};
 
 const PAGE_SIZE: u64 = 4096;
 const PAGE_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -146,6 +146,7 @@ pub(super) fn inicializar(boot_info: &BootInfo) -> Result<(), ErroVirtual> {
 		proteger_intervalo(start, end, permissions)?;
 	}
 	configurar_cache_nao_cacheavel(boot_info.frame_buffer as u64, frame_buffer_size)?;
+	mapa_memoria::desmapear()?;
 	unsafe {
 		core::arch::asm!(
 			"mov cr3, {}",
@@ -332,6 +333,31 @@ fn configurar_cache_nao_cacheavel(start: u64, size: usize) -> Result<(), ErroVir
 	Ok(())
 }
 
+/// Remove o mapeamento das paginas da area indicada, tornando-as inacessiveis.
+pub(super) fn desmapear_intervalo(start: u64, end: u64) -> Result<(), ErroVirtual> {
+	if start >= end || start % PAGE_SIZE != 0 || end % PAGE_SIZE != 0 {
+		return Err(ErroVirtual::InvalidRange);
+	}
+	let mut address = start;
+	while address < end {
+		let pte = obter_pte(address, false)?;
+		let entry = unsafe { ptr::read_volatile(pte) };
+		if entry & PRESENT != 0 {
+			unsafe {
+				ptr::write_volatile(pte, entry & !PRESENT);
+				core::arch::asm!(
+					"invlpg [{}]",
+					in(reg) address,
+					options(nostack, preserves_flags)
+				);
+			}
+		}
+		address = address
+			.checked_add(PAGE_SIZE)
+			.ok_or(ErroVirtual::InvalidRange)?;
+	}
+	Ok(())
+}
 
 fn obter_pte_direto(
 	root: *mut u64,

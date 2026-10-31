@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.7.2026
+// Construcao: 0.8.2026
 // Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
@@ -24,6 +24,8 @@ mod ioapic;
 mod interrupcoes;
 #[path = "memoria/enderecos.rs"]
 mod enderecos;
+#[path = "memoria/mapa_memoria.rs"]
+mod mapa_memoria;
 #[path = "memoria/memoria_dinamica.rs"]
 mod memoria_dinamica;
 #[path = "memoria/paginas.rs"]
@@ -224,6 +226,8 @@ fn glyph(character: char) -> [u8; 8] {
 	match character {
 		'{' => [0b00110, 0b01000, 0b01000, 0b10000, 0b01000, 0b01000, 0b00110, 0],
 		'}' => [0b01100, 0b00010, 0b00010, 0b00001, 0b00010, 0b00010, 0b01100, 0],
+		'(' => [0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010, 0],
+		')' => [0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000, 0],
 		'1' => [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, 0],
 		'4' => [0b10010, 0b10010, 0b10010, 0b11111, 0b00010, 0b00010, 0b00010, 0],
 		'0' => [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110, 0],

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.7.2026
+// Construcao: 0.8.2026
 // Funcao: Define tarefas do VS Code para compilar e executar o RustOS no QEMU.
 {
 	"version": "2.0.0",
@@ -40,7 +40,7 @@
 				"-m", "256M",
 				"-drive", "if=pflash,format=raw,unit=0,readonly=on,file=${workspaceFolder}/OVMF_CODE_4M.fd",
 				"-drive", "if=pflash,format=raw,unit=1,file=${workspaceFolder}/OVMF_VARS_4M.fd",
-				"-cdrom", "${workspaceFolder}/RustOS_Beta_v0.1_Construcao_0.7.2026.iso"
+				"-cdrom", "${workspaceFolder}/RustOS_Beta_v0.1_Construcao_0.8.2026.iso"
 			],
 			"dependsOn": [
 				"compilar RustOS",

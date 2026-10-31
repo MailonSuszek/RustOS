@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.7.2026
+// Construcao: 0.8.2026
 // Funcao: Aloca, reserva e libera paginas fisicas usando o mapa UEFI.
 use core::ptr;
 
@@ -64,7 +64,6 @@ pub(super) fn inicializar(
 		marcar_intervalo(start, end, true)?;
 	}
 
-	reservar_intervalo(0, 0x10_0000)?;
 	unsafe {
 		INITIALIZED = true;
 	}

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.7.2026
+// Construcao: 0.8.2026
 // Funcao: Define e carrega a tabela de descritores de interrupcao.
 use core::arch::global_asm;
 use core::ptr;

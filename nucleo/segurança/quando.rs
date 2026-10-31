@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.7.2026
+// Construcao: 0.8.2026
 // Funcao: Coordena as etapas de inicializacao e exibicao do nucleo em ordem.
 use core::fmt::Write;
 
@@ -18,6 +18,7 @@ enum Etapa {
 	Efi,
 	Ponteiros,
 	Aleatorio,
+	Video,
 }
 
 struct Orquestrador {
@@ -45,7 +46,8 @@ impl Orquestrador {
 			Etapa::Apic => Some(Etapa::Efi),
 			Etapa::Efi => Some(Etapa::Ponteiros),
 			Etapa::Ponteiros => Some(Etapa::Aleatorio),
-			Etapa::Aleatorio => None,
+			Etapa::Aleatorio => Some(Etapa::Video),
+			Etapa::Video => None,
 		};
 		if self.proxima != Some(etapa) {
 			return Err(ErroOrdem::EtapaForaDeOrdem);
@@ -68,13 +70,14 @@ pub(super) enum ErroOrdem {
 	IoApic(ioapic::ErroIoApic),
 	LinhaApic,
 	LinhaPonteiros,
+	LinhaVideo,
 }
 
 pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 	let mut orquestrador = Orquestrador::novo();
 
 	orquestrador.executar(Etapa::Identificacao, || {
-		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.7.2026");
+		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.8.2026");
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::Caminho, || {
@@ -136,6 +139,11 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 	orquestrador.executar(Etapa::Aleatorio, || {
 		line_number = super::aleatorio::exibir(boot_info, &mut y, line_number)
 			.map_err(|_| ErroOrdem::LinhaAleatorio)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::Video, || {
+		line_number = super::mapa_memoria::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaVideo)?;
 		Ok(())
 	})?;
 
