@@ -1,12 +1,13 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.6.2026
+// Construcao: 0.7.2026
 // Funcao: Inicializa e informa o estado de protecao da memoria do nucleo.
 use core::fmt::Write;
 
 use super::enderecos::{LinhaBuffer, LINE_NUMBER_WIDTH};
 use super::{
-	draw_scrolling_text, interrupcoes, memoria_dinamica, paginas, regioes, virtual_memory, BootInfo,
+	aleatorio, draw_scrolling_text, interrupcoes, memoria_dinamica, paginas, regioes,
+	virtual_memory, BootInfo,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -14,10 +15,15 @@ pub(super) enum ErroInicializacao {
 	AlocadorPaginas(paginas::ErroPaginas),
 	ReservaRegioes(paginas::ErroPaginas),
 	ProtecaoVirtual(virtual_memory::ErroVirtual),
+	Aleatoriedade(aleatorio::ErroAleatorio),
 	HeapNucleo(memoria_dinamica::ErroHeap),
 }
 
-pub(super) fn inicializar_nucleo(boot_info: &BootInfo) -> Result<(), ErroInicializacao> {
+pub(super) fn inicializar_nucleo(
+	boot_info: &BootInfo,
+	rng_seed: [u8; 32],
+	rng_seed_status: u32,
+) -> Result<(), ErroInicializacao> {
 	paginas::inicializar(
 		boot_info.memory_map,
 		boot_info.memory_map_size,
@@ -26,6 +32,8 @@ pub(super) fn inicializar_nucleo(boot_info: &BootInfo) -> Result<(), ErroInicial
 	.map_err(ErroInicializacao::AlocadorPaginas)?;
 	regioes::reservar(boot_info).map_err(ErroInicializacao::ReservaRegioes)?;
 	virtual_memory::inicializar(boot_info).map_err(ErroInicializacao::ProtecaoVirtual)?;
+	aleatorio::inicializar(rng_seed, rng_seed_status)
+		.map_err(ErroInicializacao::Aleatoriedade)?;
 	interrupcoes::inicializar();
 	memoria_dinamica::inicializar().map_err(ErroInicializacao::HeapNucleo)?;
 	Ok(())

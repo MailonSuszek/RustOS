@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.6.2026
+// Construcao: 0.7.2026
 // Funcao: Configura o framebuffer, carrega o nucleo ELF da ISO e transfere o controle.
 #![no_std]
 #![no_main]
@@ -25,6 +25,17 @@ const BUFFER_TOO_SMALL: Status = (1usize << (usize::BITS - 1)) | 5;
 const INVALID_PARAMETER: Status = (1usize << (usize::BITS - 1)) | 2;
 const PIXEL_RGB_RESERVED_8: u32 = 0;
 const PIXEL_BGR_RESERVED_8: u32 = 1;
+const MAX_FIRMWARE_TABLES: usize = 32;
+const TABLE_KIND_OTHER: u32 = 0;
+const TABLE_KIND_ACPI_10: u32 = 1;
+const TABLE_KIND_ACPI_20: u32 = 2;
+const TABLE_KIND_SMBIOS: u32 = 3;
+const TABLE_KIND_SMBIOS3: u32 = 4;
+const RNG_SEED_SIZE: usize = 32;
+const RNG_SEED_NO_CPU_SUPPORT: u32 = 1;
+const RNG_SEED_CPU_NO_RESPONSE: u32 = 2;
+const RNG_SEED_NO_SOURCE: u32 = 3;
+const RNG_SEED_TPM_NO_RESPONSE: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -91,6 +102,14 @@ type LocateHandleBuffer = extern "efiapi" fn(
 ) -> Status;
 type LocateProtocol =
 	extern "efiapi" fn(*const Guid, *mut c_void, *mut *mut c_void) -> Status;
+type GetRng = extern "efiapi" fn(*mut RngProtocol, *const Guid, usize, *mut u8) -> Status;
+type Tcg2SubmitCommand = extern "efiapi" fn(
+	*mut Tcg2Protocol,
+	u32,
+	*const u8,
+	u32,
+	*mut u8,
+) -> Status;
 
 #[repr(C)]
 struct BootServices {
@@ -209,6 +228,31 @@ struct BootInfo {
 	memory_descriptor_size: usize,
 	acpi_rsdp: *const u8,
 	efi_revision: u32,
+	firmware_tables: [FirmwareTablePointer; MAX_FIRMWARE_TABLES],
+	firmware_table_count: usize,
+	rng_seed: [u8; RNG_SEED_SIZE],
+	rng_seed_status: u32,
+}
+
+#[repr(C)]
+struct RngProtocol {
+	_get_info: usize,
+	get_rng: GetRng,
+}
+
+#[repr(C)]
+struct Tcg2Protocol {
+	_get_capability: usize,
+	_get_event_log: usize,
+	_hash_log_extend_event: usize,
+	submit_command: Tcg2SubmitCommand,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FirmwareTablePointer {
+	address: u64,
+	kind: u32,
 }
 
 struct MemoryMapInfo {
@@ -251,6 +295,34 @@ const ACPI_20_TABLE_GUID: Guid = Guid {
 	data4: [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81],
 };
 
+const SMBIOS_TABLE_GUID: Guid = Guid {
+	data1: 0xeb9d_2d31,
+	data2: 0x2d88,
+	data3: 0x11d3,
+	data4: [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d],
+};
+
+const SMBIOS3_TABLE_GUID: Guid = Guid {
+	data1: 0xf2fd_1544,
+	data2: 0x9794,
+	data3: 0x4a2c,
+	data4: [0x99, 0x2e, 0xe5, 0xbb, 0xcf, 0x20, 0xe3, 0x94],
+};
+
+const RNG_PROTOCOL_GUID: Guid = Guid {
+	data1: 0x3152_bca5,
+	data2: 0xeade,
+	data3: 0x433d,
+	data4: [0x86, 0x2e, 0xc0, 0x1c, 0xdc, 0x29, 0x1f, 0x44],
+};
+
+const TCG2_PROTOCOL_GUID: Guid = Guid {
+	data1: 0x607f_766c,
+	data2: 0x7455,
+	data3: 0x42be,
+	data4: [0x93, 0x0b, 0xe4, 0xd7, 0x6d, 0xb2, 0x72, 0x0f],
+};
+
 #[no_mangle]
 extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable) -> Status {
 	if system_table.is_null() {
@@ -268,6 +340,17 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 		let mut boot_info = configure_frame_buffer(boot_services);
 		boot_info.acpi_rsdp = acpi_rsdp;
 		boot_info.efi_revision = efi_revision;
+		copy_firmware_table_pointers(&*system_table, &mut boot_info);
+	match obter_seed(boot_services) {
+		Ok(seed) => {
+			boot_info.rng_seed = seed;
+			boot_info.rng_seed_status = 0;
+		}
+		Err(status) => {
+			boot_info.rng_seed = [0; RNG_SEED_SIZE];
+			boot_info.rng_seed_status = status;
+		}
+	}
 		let (block_io, kernel_file) = find_kernel_file(boot_services);
 		let (kernel_buffer, kernel_size, kernel_pages) =
 			read_kernel_file(boot_services, block_io, kernel_file);
@@ -282,9 +365,9 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 		boot_info.memory_map_size = memory_map.size;
 		boot_info.memory_descriptor_size = memory_map.descriptor_size;
 		core::arch::asm!("cli", options(nomem, nostack));
-		let entry: extern "sysv64" fn(*const BootInfo) -> ! =
+		let entry: extern "sysv64" fn(*mut BootInfo) -> ! =
 			core::mem::transmute(entry);
-		entry(&boot_info);
+		entry(&mut boot_info);
 	}
 }
 
@@ -307,6 +390,228 @@ unsafe fn find_acpi_rsdp(system_table: &SystemTable) -> *const u8 {
 		}
 	}
 	core::ptr::null()
+}
+
+unsafe fn obter_seed(boot_services: &mut BootServices) -> Result<[u8; RNG_SEED_SIZE], u32> {
+	let mut protocol = core::ptr::null_mut();
+	if (boot_services.locate_protocol)(
+		&RNG_PROTOCOL_GUID,
+		core::ptr::null_mut(),
+		&mut protocol,
+	) == SUCCESS
+		&& !protocol.is_null()
+	{
+		let rng = &mut *(protocol as *mut RngProtocol);
+		let mut seed = [0; RNG_SEED_SIZE];
+		if (rng.get_rng)(rng, core::ptr::null(), seed.len(), seed.as_mut_ptr()) == SUCCESS
+			&& seed.iter().any(|byte| *byte != 0)
+		{
+			return Ok(seed);
+		}
+	}
+	match obter_seed_cpu() {
+		Ok(seed) => Ok(seed),
+		Err(cpu_status) => match obter_seed_tpm(boot_services) {
+			Ok(seed) => Ok(seed),
+			Err(RNG_SEED_TPM_NO_RESPONSE) => Err(RNG_SEED_TPM_NO_RESPONSE),
+			Err(_) if cpu_status == RNG_SEED_NO_CPU_SUPPORT => Err(RNG_SEED_NO_SOURCE),
+			Err(_) => Err(cpu_status),
+		},
+	}
+}
+
+unsafe fn obter_seed_tpm(boot_services: &mut BootServices) -> Result<[u8; RNG_SEED_SIZE], u32> {
+	let mut protocol = core::ptr::null_mut();
+	if (boot_services.locate_protocol)(
+		&TCG2_PROTOCOL_GUID,
+		core::ptr::null_mut(),
+		&mut protocol,
+	) != SUCCESS
+		|| protocol.is_null()
+	{
+		return Err(RNG_SEED_NO_SOURCE);
+	}
+
+	let tcg2 = &mut *(protocol as *mut Tcg2Protocol);
+	let mut seed = [0; RNG_SEED_SIZE];
+	let mut written = 0;
+	for _ in 0..4 {
+		if written == seed.len() {
+			break;
+		}
+		let requested = (seed.len() - written) as u16;
+		let command = [
+			0x80,
+			0x01,
+			0x00,
+			0x00,
+			0x00,
+			0x0c,
+			0x00,
+			0x00,
+			0x01,
+			0x7b,
+			(requested >> 8) as u8,
+			requested as u8,
+		];
+		let mut response = [0u8; 64];
+		if (tcg2.submit_command)(
+			tcg2,
+			command.len() as u32,
+			command.as_ptr(),
+			response.len() as u32,
+			response.as_mut_ptr(),
+		) != SUCCESS
+		{
+			apagar_seed(&mut seed);
+			return Err(RNG_SEED_TPM_NO_RESPONSE);
+		}
+
+		let response_size = u32::from_be_bytes([
+			response[2], response[3], response[4], response[5],
+		]) as usize;
+		let response_code = u32::from_be_bytes([
+			response[6], response[7], response[8], response[9],
+		]);
+		let received = u16::from_be_bytes([response[10], response[11]]) as usize;
+		if response[0..2] != [0x80, 0x01]
+			|| response_code != 0
+			|| !(12..=response.len()).contains(&response_size)
+			|| received == 0
+			|| received > requested as usize
+			|| response_size != 12 + received
+		{
+			apagar_seed(&mut seed);
+			return Err(RNG_SEED_TPM_NO_RESPONSE);
+		}
+		seed[written..written + received].copy_from_slice(&response[12..12 + received]);
+		written += received;
+	}
+
+	if written == seed.len() && seed.iter().any(|byte| *byte != 0) {
+		Ok(seed)
+	} else {
+		apagar_seed(&mut seed);
+		Err(RNG_SEED_TPM_NO_RESPONSE)
+	}
+}
+
+fn apagar_seed(seed: &mut [u8; RNG_SEED_SIZE]) {
+	for byte in seed {
+		unsafe { core::ptr::write_volatile(byte, 0) };
+	}
+}
+
+unsafe fn obter_seed_cpu() -> Result<[u8; RNG_SEED_SIZE], u32> {
+	let maximum_leaf = core::arch::x86_64::__cpuid(0).eax;
+	let use_rdseed = maximum_leaf >= 7
+		&& core::arch::x86_64::__cpuid_count(7, 0).ebx & (1 << 18) != 0;
+	let use_rdrand = maximum_leaf >= 1 && core::arch::x86_64::__cpuid(1).ecx & (1 << 30) != 0;
+	if !use_rdseed && !use_rdrand {
+		return Err(RNG_SEED_NO_CPU_SUPPORT);
+	}
+
+	let mut seed = [0; RNG_SEED_SIZE];
+	if use_rdseed && preencher_seed_cpu(&mut seed, true) {
+		return Ok(seed);
+	}
+	if use_rdrand && preencher_seed_cpu(&mut seed, false) {
+		return Ok(seed);
+	}
+	Err(RNG_SEED_CPU_NO_RESPONSE)
+}
+
+unsafe fn preencher_seed_cpu(seed: &mut [u8; RNG_SEED_SIZE], use_rdseed: bool) -> bool {
+	for chunk in seed.chunks_exact_mut(core::mem::size_of::<u64>()) {
+		let mut value = None;
+		for _ in 0..10_000 {
+			value = if use_rdseed {
+				try_rdseed()
+			} else {
+				try_rdrand()
+			};
+			if value.is_some() {
+				break;
+			}
+			core::hint::spin_loop();
+		}
+		let Some(value) = value else {
+			for byte in seed.iter_mut() {
+				core::ptr::write_volatile(byte, 0);
+			}
+			return false;
+		};
+		chunk.copy_from_slice(&value.to_le_bytes());
+	}
+	seed.iter().any(|byte| *byte != 0)
+}
+
+unsafe fn try_rdseed() -> Option<u64> {
+	let value: u64;
+	let success: u8;
+	core::arch::asm!(
+		"rdseed {value}",
+		"setc {success}",
+		value = out(reg) value,
+		success = out(reg_byte) success,
+		options(nomem, nostack)
+	);
+	(success != 0).then_some(value)
+}
+
+unsafe fn try_rdrand() -> Option<u64> {
+	let value: u64;
+	let success: u8;
+	core::arch::asm!(
+		"rdrand {value}",
+		"setc {success}",
+		value = out(reg) value,
+		success = out(reg_byte) success,
+		options(nomem, nostack)
+	);
+	(success != 0).then_some(value)
+}
+
+unsafe fn copy_firmware_table_pointers(system_table: &SystemTable, boot_info: &mut BootInfo) {
+	if system_table.configuration_table.is_null() || system_table.number_of_table_entries == 0 {
+		return;
+	}
+	let tables = core::slice::from_raw_parts(
+		system_table.configuration_table.cast::<EfiConfigurationTable>(),
+		system_table.number_of_table_entries,
+	);
+	for table in tables {
+		if boot_info.firmware_table_count == MAX_FIRMWARE_TABLES {
+			break;
+		}
+		if table.vendor_table.is_null() {
+			continue;
+		}
+		let kind = if guid_matches(&table.vendor_guid, &ACPI_10_TABLE_GUID) {
+			TABLE_KIND_ACPI_10
+		} else if guid_matches(&table.vendor_guid, &ACPI_20_TABLE_GUID) {
+			TABLE_KIND_ACPI_20
+		} else if guid_matches(&table.vendor_guid, &SMBIOS_TABLE_GUID) {
+			TABLE_KIND_SMBIOS
+		} else if guid_matches(&table.vendor_guid, &SMBIOS3_TABLE_GUID) {
+			TABLE_KIND_SMBIOS3
+		} else {
+			TABLE_KIND_OTHER
+		};
+		let index = boot_info.firmware_table_count;
+		boot_info.firmware_tables[index] = FirmwareTablePointer {
+			address: table.vendor_table as u64,
+			kind,
+		};
+		boot_info.firmware_table_count += 1;
+	}
+}
+
+fn guid_matches(left: &Guid, right: &Guid) -> bool {
+	left.data1 == right.data1
+		&& left.data2 == right.data2
+		&& left.data3 == right.data3
+		&& left.data4 == right.data4
 }
 
 #[panic_handler]
@@ -464,6 +769,16 @@ unsafe fn configure_frame_buffer(boot_services: &mut BootServices) -> BootInfo {
 		memory_descriptor_size: 0,
 		acpi_rsdp: core::ptr::null(),
 		efi_revision: 0,
+		firmware_tables: [
+			FirmwareTablePointer {
+				address: 0,
+				kind: TABLE_KIND_OTHER,
+			};
+			MAX_FIRMWARE_TABLES
+		],
+		firmware_table_count: 0,
+		rng_seed: [0; RNG_SEED_SIZE],
+		rng_seed_status: RNG_SEED_NO_CPU_SUPPORT,
 	}
 }
 

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.6.2026
+// Construcao: 0.7.2026
 // Funcao: Configura o mapeamento virtual identidade e as protecoes de paginas do nucleo.
 use core::ptr;
 
@@ -108,6 +108,10 @@ pub(super) fn inicializar(boot_info: &BootInfo) -> Result<(), ErroVirtual> {
 			options(nostack, preserves_flags)
 		);
 	}
+	mapear_identidade(boot_info as *const BootInfo as u64, core::mem::size_of::<BootInfo>())?;
+	mapear_identidade(boot_info.memory_map as u64, boot_info.memory_map_size)?;
+	mapear_identidade(boot_info.frame_buffer as u64, frame_buffer_size)?;
+	mapear_identidade(stack_pointer, 1)?;
 
 	let ranges = [
 		(
@@ -156,6 +160,7 @@ pub(super) fn mapear_identidade(start: u64, size: usize) -> Result<(), ErroVirtu
 	if size == 0 {
 		return Ok(());
 	}
+	validar_intervalo(start, size)?;
 	let end = start
 		.checked_add(size as u64)
 		.ok_or(ErroVirtual::InvalidRange)?;
@@ -231,7 +236,16 @@ fn validar_intervalo(start: u64, size: usize) -> Result<(), ErroVirtual> {
 	let end = start
 		.checked_add(size as u64)
 		.ok_or(ErroVirtual::InvalidRange)?;
-	if size == 0 || end > MAX_PHYSICAL_ADDRESS {
+	let cr4: u64;
+	unsafe {
+		core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+	}
+	let address_limit = if cr4 & CR4_LA57 != 0 {
+		1u64 << 56
+	} else {
+		1u64 << 47
+	};
+	if size == 0 || end > address_limit {
 		return Err(ErroVirtual::InvalidRange);
 	}
 	Ok(())
@@ -353,12 +367,17 @@ fn obter_pte(address: u64, create: bool) -> Result<*mut u64, ErroVirtual> {
 		core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
 	}
 	let root = (cr3 & PAGE_MASK) as *mut u64;
-	if root.is_null() || address >> 48 != 0 {
-		return Err(ErroVirtual::InvalidRange);
-	}
 	let cr4: u64;
 	unsafe {
 		core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+	}
+	let address_limit = if cr4 & CR4_LA57 != 0 {
+		1u64 << 56
+	} else {
+		1u64 << 47
+	};
+	if root.is_null() || address >= address_limit {
+		return Err(ErroVirtual::InvalidRange);
 	}
 	let root = if cr4 & CR4_LA57 != 0 {
 		descend(

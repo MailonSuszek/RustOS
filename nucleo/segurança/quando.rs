@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.6.2026
+// Construcao: 0.7.2026
 // Funcao: Coordena as etapas de inicializacao e exibicao do nucleo em ordem.
 use core::fmt::Write;
 
@@ -16,6 +16,8 @@ enum Etapa {
 	Protecao,
 	Apic,
 	Efi,
+	Ponteiros,
+	Aleatorio,
 }
 
 struct Orquestrador {
@@ -41,7 +43,9 @@ impl Orquestrador {
 			Etapa::Memoria => Some(Etapa::Protecao),
 			Etapa::Protecao => Some(Etapa::Apic),
 			Etapa::Apic => Some(Etapa::Efi),
-			Etapa::Efi => None,
+			Etapa::Efi => Some(Etapa::Ponteiros),
+			Etapa::Ponteiros => Some(Etapa::Aleatorio),
+			Etapa::Aleatorio => None,
 		};
 		if self.proxima != Some(etapa) {
 			return Err(ErroOrdem::EtapaForaDeOrdem);
@@ -59,16 +63,18 @@ pub(super) enum ErroOrdem {
 	MapaMemoria(super::enderecos::ErroMapa),
 	LinhaEfi,
 	LinhaProtecao,
+	LinhaAleatorio,
 	Apic(apic::ErroApic),
 	IoApic(ioapic::ErroIoApic),
 	LinhaApic,
+	LinhaPonteiros,
 }
 
 pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 	let mut orquestrador = Orquestrador::novo();
 
 	orquestrador.executar(Etapa::Identificacao, || {
-		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.6.2026");
+		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.7.2026");
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::Caminho, || {
@@ -119,6 +125,17 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 		)
 		.map_err(|_| ErroOrdem::LinhaEfi)?;
 		draw_scrolling_text(boot_info, &mut y, line.como_str().map_err(|_| ErroOrdem::LinhaEfi)?);
+		line_number = line_number.checked_add(1).ok_or(ErroOrdem::LinhaEfi)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::Ponteiros, || {
+		line_number = super::ponteiros::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaPonteiros)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::Aleatorio, || {
+		line_number = super::aleatorio::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaAleatorio)?;
 		Ok(())
 	})?;
 

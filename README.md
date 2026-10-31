@@ -4,7 +4,7 @@
 **Funcao:** Documenta a estrutura, os requisitos, a compilacao e a execucao do RustOS.<br>
 **Nome:** RustOS Beta  
 **Versao:** v0.1  
-**Construcao:** 0.6.2026<br>
+**Construcao:** 0.7.2026<br>
 **Arquitetura:** x86-64  
 **Boot:** UEFI
 
@@ -23,8 +23,10 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `nucleo/cpu/interrupcoes.rs`: carrega a IDT sem mensagem e mantem as interrupcoes da CPU desabilitadas.
 - `nucleo/segurança/quando.rs`: orquestra em ordem as etapas de exibicao do nucleo para evitar execucao fora de sequencia.
 - `nucleo/segurança/o_que.rs`: inicializa a memoria pertencente ao nucleo e exibe o estado de protecao apos a inicializacao bem-sucedida.
+- `nucleo/segurança/aleatorio.rs`: inicializa um CRNG ChaCha20 com entropia do protocolo RNG UEFI, das instrucoes RDSEED/RDRAND ou do TPM 2.0 via TCG2.
 - `nucleo/memoria/enderecos.rs`: interpreta o mapa UEFI e lista os intervalos de RAM.
 - `nucleo/memoria/paginas.rs`: aloca e libera paginas fisicas entre as regioes UEFI convencionais, com limite de 64 GiB.
+- `nucleo/memoria/ponteiros.rs`: exibe os enderecos de tabelas UEFI recebidos pelo carregador, incluindo ACPI e SMBIOS.
 - `nucleo/memoria/regioes.rs`: reserva explicitamente a imagem do nucleo, o framebuffer e os dados de boot.
 - `nucleo/memoria/virtual.rs`: cria um mapeamento identidade de 64 GiB, protege as secoes do nucleo, habilita NX e CR0.WP e marca o framebuffer como nao cacheavel.
 - `nucleo/memoria/memoria_dinamica.rs`: fornece o alocador global do nucleo baseado em paginas fisicas.
@@ -33,7 +35,7 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI` e `inicio.so` na raiz.
 - `compilar.sh`: compila os estagios UEFI e o nucleo freestanding, e gera a imagem FAT e a ISO.
 - `.vscode/tasks.json`: tarefas para compilar e executar no QEMU.
-- `RustOS_Beta_v0.1_Construcao_0.6.2026.iso`: imagem ISO gerada na raiz do projeto.
+- `RustOS_Beta_v0.1_Construcao_0.7.2026.iso`: imagem ISO gerada na raiz do projeto.
 
 Os estagios sao binarios separados: o firmware inicia `BOOTX64.EFI`, que carrega `inicio.so` de `inicio.img`; `inicio.so` procura e carrega `nucleo/Rust` diretamente dos setores da ISO 9660. O nucleo recebe do carregador os dados do framebuffer e, apos a transferencia, executa sem os servicos de boot UEFI.
 
@@ -50,19 +52,22 @@ O nome `NUCLEO/RUST` pode aparecer como `NUCLEO/RUST.;1` ao listar a ISO, devido
 Na tela, o nucleo mostra as etapas nesta ordem:
 
 ```text
-{   1} RustOS Beta v0.1 Construção 0.6.2026
+{   1} RustOS Beta v0.1 Construção 0.7.2026
 {   2} Caminho: nucleo/Rust
 {   3} Organização de segurança de execução
 {   4} Lista de endereços da memoria RAM
 {   5} <intervalo de memoria>
 {próximo número} RAM proteção ativo
 {próximo número} APCI iniciado
-{próximo número} EFI: UEFI 2.70
+{próximo número} EFI: UEFI *numeror da versão*
+{próximo número} UEFI tabelas: ACPI2=0x..., SMBIOS=0x...
+				 UEFI=0x... (continuação sem numeração)
+{próximo número} Aleatoriedades do sistema ativado
 ```
 
-O número da versão EFI e obtido de `SystemTable.Header.Revision`; o exemplo `2.70` pode variar conforme o firmware. Essa linha aparece depois da inicializacao do APIC. O loader tambem passa o RSDP ACPI ao nucleo, que usa a MADT para localizar os IOAPICs.
+O número da versão EFI e obtido de `SystemTable.Header.Revision`; o exemplo `2.70` pode variar conforme o firmware. Depois dessa linha, o carregador passa ao nucleo os enderecos das tabelas UEFI, identificando ACPI e SMBIOS quando reconhecidos. Linhas de continuacao nao recebem numero. O nucleo tambem usa a MADT ACPI para localizar os IOAPICs. O CRNG usa ChaCha20 com uma semente de 256 bits obtida do protocolo RNG do UEFI, de RDSEED/RDRAND ou de TPM 2.0 via protocolo TCG2; sem uma fonte disponivel, a inicializacao falha em vez de usar uma semente previsivel.
 
-Apos os intervalos, o nucleo exibe “RAM proteção ativo”, inicializa o APIC local e os IOAPICs e mostra a versao EFI. A IDT esta carregada, mas todos os vetores ainda usam um handler fatal; as interrupcoes da CPU permanecem desabilitadas e as entradas do IOAPIC ficam mascaradas. Ainda nao ha tratamento ou roteamento de IRQs.
+Apos os intervalos, o nucleo exibe “RAM proteção ativo”, inicializa o APIC local e os IOAPICs, mostra a versao EFI, lista os ponteiros das tabelas UEFI e ativa o CRNG. A IDT esta carregada, mas todos os vetores ainda usam um handler fatal; as interrupcoes da CPU permanecem desabilitadas e as entradas do IOAPIC ficam mascaradas. Ainda nao ha tratamento ou roteamento de IRQs.
 
 O núcleo inicializa um alocador de páginas físicas usando apenas memória convencional UEFI, reserva as áreas do núcleo/framebuffer/dados de boot e instala um mapeamento identidade dos primeiros 64 GiB. Código do núcleo fica somente leitura/executável; dados ficam leitura/escrita/não executáveis; o restante do mapeamento fica não executável. NX e proteção de escrita (CR0.WP) são habilitados, e o framebuffer é mapeado como não cacheável. O heap global usa páginas físicas e executa um teste de alocação na inicialização. O alocador gerencia endereços físicos abaixo de 64 GiB. Ainda não há processos de usuário nem separação de espaços de endereçamento por processo. Arquivos permanecem no armazenamento e seus dados são carregados na RAM quando usados. A listagem mostra endereços e tipos UEFI; as linhas rolam a tela quando necessário.
 

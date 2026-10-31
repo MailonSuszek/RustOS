@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.6.2026
+// Construcao: 0.7.2026
 // Funcao: Interpreta e exibe os intervalos de memoria informados pelo mapa UEFI.
 use core::fmt::{self, Write};
 use core::ptr;
@@ -11,6 +11,7 @@ const PAGE_SIZE: u64 = 4096;
 const MEMORY_DESCRIPTOR_MIN_SIZE: usize = 40;
 const FIRST_ADDRESS_LINE: usize = 5;
 pub(super) const LINE_NUMBER_WIDTH: usize = 4;
+pub(super) const LINE_BUFFER_CAPACITY: usize = 96;
 const USAGE_LABEL_WIDTH: usize = 30;
 const LINE_DELAY_MILLISECONDS: u64 = 25;
 
@@ -152,7 +153,7 @@ fn uso_memoria(memory_type: u32) -> &'static str {
 }
 
 pub(super) struct LinhaBuffer {
-	bytes: [u8; 96],
+	bytes: [u8; LINE_BUFFER_CAPACITY],
 	len: usize,
 }
 
@@ -166,6 +167,14 @@ impl LinhaBuffer {
 
 	pub(super) fn como_str(&self) -> Result<&str, fmt::Error> {
 		core::str::from_utf8(&self.bytes[..self.len]).map_err(|_| fmt::Error)
+	}
+
+	pub(super) fn tamanho(&self) -> usize {
+		self.len
+	}
+
+	pub(super) fn limpar(&mut self) {
+		self.len = 0;
 	}
 }
 

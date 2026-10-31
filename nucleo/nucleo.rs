@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.6.2026
+// Construcao: 0.7.2026
 // Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
@@ -10,6 +10,8 @@ use core::ptr;
 
 #[path = "segurança/quando.rs"]
 mod quando;
+#[path = "segurança/aleatorio.rs"]
+mod aleatorio;
 #[path = "segurança/o_que.rs"]
 mod o_que;
 #[path = "cpu/apic.rs"]
@@ -26,6 +28,8 @@ mod enderecos;
 mod memoria_dinamica;
 #[path = "memoria/paginas.rs"]
 mod paginas;
+#[path = "memoria/ponteiros.rs"]
+mod ponteiros;
 #[path = "memoria/regioes.rs"]
 mod regioes;
 #[path = "memoria/virtual.rs"]
@@ -33,6 +37,14 @@ mod virtual_memory;
 
 const PIXEL_RGB_RESERVED_8: u32 = 0;
 const PIXEL_BGR_RESERVED_8: u32 = 1;
+const MAX_FIRMWARE_TABLES: usize = 32;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct FirmwareTablePointer {
+	address: u64,
+	kind: u32,
+}
 
 #[repr(C)]
 pub struct BootInfo {
@@ -46,14 +58,18 @@ pub struct BootInfo {
 	memory_descriptor_size: usize,
 	acpi_rsdp: *const u8,
 	efi_revision: u32,
+	firmware_tables: [FirmwareTablePointer; MAX_FIRMWARE_TABLES],
+	firmware_table_count: usize,
+	rng_seed: [u8; 32],
+	rng_seed_status: u32,
 }
 
 #[no_mangle]
-pub extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
+pub extern "C" fn kernel_main(boot_info: *mut BootInfo) -> ! {
 	if boot_info.is_null() {
 		halt();
 	}
-	let boot_info = unsafe { &*boot_info };
+	let boot_info = unsafe { &mut *boot_info };
 	if boot_info.frame_buffer.is_null()
 		|| boot_info.width == 0
 		|| boot_info.height == 0
@@ -65,12 +81,27 @@ pub extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
 	{
 		halt();
 	}
+	let rng_seed = core::mem::replace(&mut boot_info.rng_seed, [0; 32]);
 
-	if let Err(error) = o_que::inicializar_nucleo(boot_info) {
+	let rng_seed_status = boot_info.rng_seed_status;
+	if let Err(error) = o_que::inicializar_nucleo(boot_info, rng_seed, rng_seed_status) {
 		let message = match error {
 			o_que::ErroInicializacao::AlocadorPaginas(_) => "Erro alocador RAM",
 			o_que::ErroInicializacao::ReservaRegioes(_) => "Erro reserva nucleo",
-			o_que::ErroInicializacao::ProtecaoVirtual(_) => "Erro protecao virtual",
+				o_que::ErroInicializacao::ProtecaoVirtual(error) => match error {
+					virtual_memory::ErroVirtual::UnsupportedCpu => "CPU sem suporte NX",
+					virtual_memory::ErroVirtual::InvalidRange => "Endereco virtual invalido",
+					virtual_memory::ErroVirtual::UnmappedPage => "Pagina virtual ausente",
+					virtual_memory::ErroVirtual::ConflictingMapping => "Mapeamento virtual conflitante",
+					virtual_memory::ErroVirtual::PageTablePoolExhausted => "Sem paginas para tabelas",
+				},
+				o_que::ErroInicializacao::Aleatoriedade(error) => match error {
+					aleatorio::ErroAleatorio::SementeAusente => "Semente RNG ausente",
+					aleatorio::ErroAleatorio::NenhumaFonte => "RNG UEFI/CPU indisponiveis",
+					aleatorio::ErroAleatorio::HardwareSemResposta => "RDSEED/RDRAND sem resposta",
+					aleatorio::ErroAleatorio::TpmSemResposta => "TPM sem resposta RNG",
+					aleatorio::ErroAleatorio::ContadorEsgotado => "Contador CRNG esgotado",
+				},
 			o_que::ErroInicializacao::HeapNucleo(_) => "Erro heap nucleo",
 		};
 		draw_text(boot_info, 8, 48, message);
@@ -207,19 +238,30 @@ fn glyph(character: char) -> [u8; 8] {
 		'.' => [0, 0, 0, 0, 0, 0b01100, 0b01100, 0],
 		'-' => [0, 0, 0, 0b11111, 0, 0, 0, 0],
 		':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0, 0],
+		'=' => [0, 0, 0b11111, 0, 0b11111, 0, 0, 0],
+		'?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100, 0],
 		'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0],
 		'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110, 0],
 		'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110, 0],
 		'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111, 0],
 		'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, 0],
+		'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110, 0],
+		'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, 0],
+		'J' => [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100, 0],
+		'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001, 0],
 		'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111, 0],
 		'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001, 0],
+		'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001, 0],
+		'Q' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101, 0],
 		'a' => [0, 0, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111, 0],
 		'b' => [0b10000, 0b10000, 0b10110, 0b11001, 0b10001, 0b10001, 0b11110, 0],
 		'd' => [0, 0, 0b00001, 0b01101, 0b10011, 0b10001, 0b01111, 0],
+		'f' => [0b00110, 0b01001, 0b01000, 0b11100, 0b01000, 0b01000, 0b01000, 0],
 		'g' => [0, 0, 0b01111, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
 		'm' => [0, 0, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101, 0],
 		'i' => [0b00100, 0, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110, 0],
+		'j' => [0, 0b00010, 0, 0b00110, 0b00010, 0b00010, 0b10010, 0b01100],
+		'k' => [0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0],
 		'h' => [0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0],
 		'x' => [0, 0, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0],
 		'/' => [0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000, 0],
@@ -227,6 +269,7 @@ fn glyph(character: char) -> [u8; 8] {
 		'l' => [0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, 0],
 		'p' => [0, 0, 0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000],
 		'c' => [0, 0, 0b01110, 0b10000, 0b10000, 0b10000, 0b01110, 0],
+		'q' => [0, 0, 0b01111, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001],
 		'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001, 0],
 		'u' => [0, 0, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101, 0],
 		'r' => [0, 0, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000, 0],
@@ -234,6 +277,11 @@ fn glyph(character: char) -> [u8; 8] {
 		't' => [0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00100, 0b00011, 0],
 		'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0],
 		'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000, 0],
+		'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100, 0],
+		'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b10101, 0b01010, 0],
+		'X' => [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001, 0],
+		'Y' => [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, 0],
+		'Z' => [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111, 0],
 		'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111, 0],
 		'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0],
 		'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0],
@@ -242,9 +290,11 @@ fn glyph(character: char) -> [u8; 8] {
 		'e' => [0, 0, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110, 0],
 		'v' => [0, 0, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100, 0],
 		'o' => [0, 0, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110, 0],
+		'w' => [0, 0, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010, 0],
+		'y' => [0, 0, 0b10001, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
 		'z' => [0, 0, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111, 0],
 		'ç' => [0, 0, 0b01110, 0b10000, 0b10000, 0b10001, 0b01110, 0b00100],
 		'ã' => [0b01010, 0b00101, 0, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111],
-		_ => [0b11111, 0b10001, 0b00010, 0b00100, 0b00100, 0, 0b00100, 0],
+		_ => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100, 0],
 	}
 }
