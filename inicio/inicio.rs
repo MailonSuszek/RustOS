@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.5.2026
+// Construcao: 0.6.2026
 // Funcao: Configura o framebuffer, carrega o nucleo ELF da ISO e transfere o controle.
 #![no_std]
 #![no_main]
@@ -36,8 +36,17 @@ struct Guid {
 }
 
 #[repr(C)]
+struct EfiTableHeader {
+	signature: u64,
+	revision: u32,
+	header_size: u32,
+	crc32: u32,
+	reserved: u32,
+}
+
+#[repr(C)]
 struct SystemTable {
-	header: [u8; 24],
+	header: EfiTableHeader,
 	firmware_vendor: *mut u16,
 	firmware_revision: u32,
 	console_in_handle: Handle,
@@ -50,6 +59,12 @@ struct SystemTable {
 	boot_services: *mut BootServices,
 	number_of_table_entries: usize,
 	configuration_table: *mut c_void,
+}
+
+#[repr(C)]
+struct EfiConfigurationTable {
+	vendor_guid: Guid,
+	vendor_table: *const c_void,
 }
 
 type AllocatePages =
@@ -192,6 +207,8 @@ struct BootInfo {
 	memory_map: *const u8,
 	memory_map_size: usize,
 	memory_descriptor_size: usize,
+	acpi_rsdp: *const u8,
+	efi_revision: u32,
 }
 
 struct MemoryMapInfo {
@@ -220,6 +237,20 @@ const BLOCK_IO_GUID: Guid = Guid {
 	data4: [0x8e, 0x39, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
 
+const ACPI_10_TABLE_GUID: Guid = Guid {
+	data1: 0xeb9d_2d30,
+	data2: 0x2d88,
+	data3: 0x11d3,
+	data4: [0x9a, 0x16, 0x00, 0x90, 0x27, 0x3f, 0xc1, 0x4d],
+};
+
+const ACPI_20_TABLE_GUID: Guid = Guid {
+	data1: 0x8868_e871,
+	data2: 0xe4f1,
+	data3: 0x11d3,
+	data4: [0xbc, 0x22, 0x00, 0x80, 0xc7, 0x3c, 0x88, 0x81],
+};
+
 #[no_mangle]
 extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable) -> Status {
 	if system_table.is_null() {
@@ -227,12 +258,16 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 	}
 
 	unsafe {
+		let acpi_rsdp = find_acpi_rsdp(&*system_table);
+		let efi_revision = (*system_table).header.revision;
 		let boot_services = (*system_table).boot_services;
 		if boot_services.is_null() {
 			halt();
 		}
 		let boot_services = &mut *boot_services;
 		let mut boot_info = configure_frame_buffer(boot_services);
+		boot_info.acpi_rsdp = acpi_rsdp;
+		boot_info.efi_revision = efi_revision;
 		let (block_io, kernel_file) = find_kernel_file(boot_services);
 		let (kernel_buffer, kernel_size, kernel_pages) =
 			read_kernel_file(boot_services, block_io, kernel_file);
@@ -251,6 +286,27 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 			core::mem::transmute(entry);
 		entry(&boot_info);
 	}
+}
+
+unsafe fn find_acpi_rsdp(system_table: &SystemTable) -> *const u8 {
+	if system_table.configuration_table.is_null() || system_table.number_of_table_entries == 0 {
+		return core::ptr::null();
+	}
+	let tables = core::slice::from_raw_parts(
+		system_table.configuration_table.cast::<EfiConfigurationTable>(),
+		system_table.number_of_table_entries,
+	);
+	for wanted in [ACPI_20_TABLE_GUID, ACPI_10_TABLE_GUID] {
+		if let Some(table) = tables.iter().find(|table| {
+			table.vendor_guid.data1 == wanted.data1
+				&& table.vendor_guid.data2 == wanted.data2
+				&& table.vendor_guid.data3 == wanted.data3
+				&& table.vendor_guid.data4 == wanted.data4
+		}) {
+			return table.vendor_table.cast();
+		}
+	}
+	core::ptr::null()
 }
 
 #[panic_handler]
@@ -406,6 +462,8 @@ unsafe fn configure_frame_buffer(boot_services: &mut BootServices) -> BootInfo {
 		memory_map: core::ptr::null(),
 		memory_map_size: 0,
 		memory_descriptor_size: 0,
+		acpi_rsdp: core::ptr::null(),
+		efi_revision: 0,
 	}
 }
 

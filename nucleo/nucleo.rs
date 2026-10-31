@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.5.2026
+// Construcao: 0.6.2026
 // Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
@@ -12,10 +12,18 @@ use core::ptr;
 mod quando;
 #[path = "segurança/o_que.rs"]
 mod o_que;
+#[path = "cpu/apic.rs"]
+mod apic;
+#[path = "cpu/idt.rs"]
+mod idt;
+#[path = "cpu/ioapic.rs"]
+mod ioapic;
+#[path = "cpu/interrupcoes.rs"]
+mod interrupcoes;
 #[path = "memoria/enderecos.rs"]
 mod enderecos;
-#[path = "memoria/heap.rs"]
-mod heap;
+#[path = "memoria/memoria_dinamica.rs"]
+mod memoria_dinamica;
 #[path = "memoria/paginas.rs"]
 mod paginas;
 #[path = "memoria/regioes.rs"]
@@ -36,6 +44,8 @@ pub struct BootInfo {
 	memory_map: *const u8,
 	memory_map_size: usize,
 	memory_descriptor_size: usize,
+	acpi_rsdp: *const u8,
+	efi_revision: u32,
 }
 
 #[no_mangle]
@@ -67,7 +77,13 @@ pub extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
 		halt();
 	}
 
-	if quando::executar(boot_info).is_err() {
+	if let Err(error) = quando::executar(boot_info) {
+		let message = match error {
+			quando::ErroOrdem::Apic(_) => "Erro APCI",
+			quando::ErroOrdem::IoApic(_) => "Erro IOAPIC",
+			_ => "Erro inicializacao",
+		};
+		draw_text(boot_info, 8, 48, message);
 		halt();
 	}
 	halt()
@@ -217,6 +233,10 @@ fn glyph(character: char) -> [u8; 8] {
 		's' => [0, 0, 0b01110, 0b10000, 0b01110, 0b00001, 0b11110, 0],
 		't' => [0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00100, 0b00011, 0],
 		'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0],
+		'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000, 0],
+		'I' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111, 0],
+		'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0],
+		'U' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, 0],
 		'S' => [0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110, 0],
 		'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110, 0],
 		'e' => [0, 0, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110, 0],

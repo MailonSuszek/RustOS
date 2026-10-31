@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.5.2026
+// Construcao: 0.6.2026
 // Funcao: Configura o mapeamento virtual identidade e as protecoes de paginas do nucleo.
 use core::ptr;
 
@@ -19,6 +19,7 @@ const LARGE_PAGE: u64 = 1 << 7;
 const GLOBAL: u64 = 1 << 8;
 const LARGE_PAGE_PAT: u64 = 1 << 12;
 const NO_EXECUTE: u64 = 1 << 63;
+const CR4_LA57: u64 = 1 << 12;
 const EFER_MSR: u32 = 0xc000_0080;
 const EFER_NXE: u64 = 1 << 11;
 const CR0_WRITE_PROTECT: u64 = 1 << 16;
@@ -36,7 +37,6 @@ static mut NEXT_PAGE_TABLE: usize = 0;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ErroVirtual {
 	UnsupportedCpu,
-	UnsupportedPagingMode,
 	InvalidRange,
 	UnmappedPage,
 	ConflictingMapping,
@@ -73,9 +73,7 @@ pub(super) fn inicializar(boot_info: &BootInfo) -> Result<(), ErroVirtual> {
 		core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
 		core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
 	}
-	if cr4 & (1 << 12) != 0 {
-		return Err(ErroVirtual::UnsupportedPagingMode);
-	}
+	let five_level_paging = cr4 & CR4_LA57 != 0;
 
 	let frame_buffer_size = boot_info
 		.pixels_per_scan_line
@@ -102,7 +100,7 @@ pub(super) fn inicializar(boot_info: &BootInfo) -> Result<(), ErroVirtual> {
 		);
 	}
 
-	let root = construir_mapa_identidade()?;
+	let root = construir_mapa_identidade(five_level_paging)?;
 	unsafe {
 		core::arch::asm!(
 			"mov cr3, {}",
@@ -191,6 +189,12 @@ pub(super) fn mapear_identidade(start: u64, size: usize) -> Result<(), ErroVirtu
 	Ok(())
 }
 
+pub(super) fn mapear_dispositivo(start: u64, size: usize) -> Result<(), ErroVirtual> {
+	validar_intervalo(start, size)?;
+	mapear_identidade(start, size)?;
+	configurar_cache_nao_cacheavel(start, size)
+}
+
 fn proteger_intervalo(
 	start: u64,
 	end: u64,
@@ -233,14 +237,23 @@ fn validar_intervalo(start: u64, size: usize) -> Result<(), ErroVirtual> {
 	Ok(())
 }
 
-fn construir_mapa_identidade() -> Result<*mut u64, ErroVirtual> {
+fn construir_mapa_identidade(five_level_paging: bool) -> Result<*mut u64, ErroVirtual> {
 	unsafe {
 		NEXT_PAGE_TABLE = 0;
 	}
 	let root = novo_page_table()?;
+	let pml4 = if five_level_paging {
+		let pml4 = novo_page_table()?;
+		unsafe {
+			ptr::write_volatile(root, pml4 as u64 | PRESENT | WRITABLE);
+		}
+		pml4
+	} else {
+		root
+	};
 	let pdpt = novo_page_table()?;
 	unsafe {
-		ptr::write_volatile(root, pdpt as u64 | PRESENT | WRITABLE);
+		ptr::write_volatile(pml4, pdpt as u64 | PRESENT | WRITABLE);
 	}
 
 	for pdpt_index in 0..PAGE_DIRECTORIES {
@@ -267,7 +280,7 @@ fn construir_mapa_identidade() -> Result<*mut u64, ErroVirtual> {
 	let text_end = core::ptr::addr_of!(__text_end) as u64;
 	let mut address = text_start;
 	while address < text_end {
-		let pte = obter_pte_direto(root, address)?;
+		let pte = obter_pte_direto(root, address, five_level_paging)?;
 		unsafe {
 			ptr::write_volatile(
 				pte,
@@ -305,7 +318,20 @@ fn configurar_cache_nao_cacheavel(start: u64, size: usize) -> Result<(), ErroVir
 	Ok(())
 }
 
-fn obter_pte_direto(root: *mut u64, address: u64) -> Result<*mut u64, ErroVirtual> {
+
+fn obter_pte_direto(
+	root: *mut u64,
+	address: u64,
+	five_level_paging: bool,
+) -> Result<*mut u64, ErroVirtual> {
+	let root = if five_level_paging {
+		descend(
+			unsafe { root.add(((address >> 48) & 0x1ff) as usize) },
+			false,
+		)?
+	} else {
+		root
+	};
 	let pml4e = unsafe { root.add(((address >> 39) & 0x1ff) as usize) };
 	let pdpt = descend(pml4e, false)?;
 	let pdpte = unsafe { pdpt.add(((address >> 30) & 0x1ff) as usize) };
@@ -330,6 +356,18 @@ fn obter_pte(address: u64, create: bool) -> Result<*mut u64, ErroVirtual> {
 	if root.is_null() || address >> 48 != 0 {
 		return Err(ErroVirtual::InvalidRange);
 	}
+	let cr4: u64;
+	unsafe {
+		core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+	}
+	let root = if cr4 & CR4_LA57 != 0 {
+		descend(
+			unsafe { root.add(((address >> 48) & 0x1ff) as usize) },
+			create,
+		)?
+	} else {
+		root
+	};
 
 	let pml4e = unsafe { root.add(((address >> 39) & 0x1ff) as usize) };
 	let pdpt = descend(pml4e, create)?;

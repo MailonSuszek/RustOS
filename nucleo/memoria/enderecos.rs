@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.5.2026
+// Construcao: 0.6.2026
 // Funcao: Interpreta e exibe os intervalos de memoria informados pelo mapa UEFI.
 use core::fmt::{self, Write};
 use core::ptr;
@@ -10,7 +10,7 @@ use super::{draw_scrolling_text, BootInfo};
 const PAGE_SIZE: u64 = 4096;
 const MEMORY_DESCRIPTOR_MIN_SIZE: usize = 40;
 const FIRST_ADDRESS_LINE: usize = 5;
-const LINE_NUMBER_WIDTH: usize = 3;
+pub(super) const LINE_NUMBER_WIDTH: usize = 4;
 const USAGE_LABEL_WIDTH: usize = 30;
 const LINE_DELAY_MILLISECONDS: u64 = 25;
 
@@ -36,7 +36,7 @@ pub(super) fn exibir(boot_info: &BootInfo) -> Result<(usize, usize), ErroMapa> {
 	draw_scrolling_text(
 		boot_info,
 		&mut y,
-		"{4} Lista de endereços da memoria RAM",
+		"{   4} Lista de endereços da memoria RAM",
 	);
 	let tsc_frequency = tsc_frequency_hz();
 	aguardar_linha(tsc_frequency);

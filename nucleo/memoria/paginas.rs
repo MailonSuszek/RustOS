@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.5.2026
+// Construcao: 0.6.2026
 // Funcao: Aloca, reserva e libera paginas fisicas usando o mapa UEFI.
 use core::ptr;
 

@@ -1,18 +1,20 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.5.2026
+// Construcao: 0.6.2026
 // Funcao: Inicializa e informa o estado de protecao da memoria do nucleo.
 use core::fmt::Write;
 
-use super::enderecos::LinhaBuffer;
-use super::{draw_scrolling_text, heap, paginas, regioes, virtual_memory, BootInfo};
+use super::enderecos::{LinhaBuffer, LINE_NUMBER_WIDTH};
+use super::{
+	draw_scrolling_text, interrupcoes, memoria_dinamica, paginas, regioes, virtual_memory, BootInfo,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ErroInicializacao {
 	AlocadorPaginas(paginas::ErroPaginas),
 	ReservaRegioes(paginas::ErroPaginas),
 	ProtecaoVirtual(virtual_memory::ErroVirtual),
-	HeapNucleo(heap::ErroHeap),
+	HeapNucleo(memoria_dinamica::ErroHeap),
 }
 
 pub(super) fn inicializar_nucleo(boot_info: &BootInfo) -> Result<(), ErroInicializacao> {
@@ -24,7 +26,8 @@ pub(super) fn inicializar_nucleo(boot_info: &BootInfo) -> Result<(), ErroInicial
 	.map_err(ErroInicializacao::AlocadorPaginas)?;
 	regioes::reservar(boot_info).map_err(ErroInicializacao::ReservaRegioes)?;
 	virtual_memory::inicializar(boot_info).map_err(ErroInicializacao::ProtecaoVirtual)?;
-	heap::inicializar().map_err(ErroInicializacao::HeapNucleo)?;
+	interrupcoes::inicializar();
+	memoria_dinamica::inicializar().map_err(ErroInicializacao::HeapNucleo)?;
 	Ok(())
 }
 
@@ -32,9 +35,14 @@ pub(super) fn exibir(
 	boot_info: &BootInfo,
 	y: &mut usize,
 	line_number: usize,
-) -> Result<(), core::fmt::Error> {
+) -> Result<usize, core::fmt::Error> {
 	let mut line = LinhaBuffer::novo();
-	write!(&mut line, "{{{:>3}}} RAM proteção ativo", line_number)?;
+	write!(
+		&mut line,
+		"{{{:>width$}}} RAM proteção ativo",
+		line_number,
+		width = LINE_NUMBER_WIDTH
+	)?;
 	draw_scrolling_text(boot_info, y, line.como_str()?);
-	Ok(())
+	line_number.checked_add(1).ok_or(core::fmt::Error)
 }

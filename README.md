@@ -4,7 +4,7 @@
 **Funcao:** Documenta a estrutura, os requisitos, a compilacao e a execucao do RustOS.<br>
 **Nome:** RustOS Beta  
 **Versao:** v0.1  
-**Construcao:** 0.5.2026<br>
+**Construcao:** 0.6.2026<br>
 **Arquitetura:** x86-64  
 **Boot:** UEFI
 
@@ -17,19 +17,23 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `inicio/EFI/BOOT/BOOTX64.EFI`: executavel UEFI compilado para x86-64.
 - `inicio/inicio.so`: segundo estagio compilado para UEFI. Apesar da extensao `.so`, e um executavel PE/COFF UEFI, nao uma biblioteca ELF Linux.
 - `nucleo/nucleo.rs`: codigo-fonte do nucleo freestanding x86-64.
+- `nucleo/cpu/apic.rs`: habilita o APIC local em modo xAPIC ou x2APIC.
+- `nucleo/cpu/idt.rs`: cria e carrega uma IDT com 256 vetores; os vetores ainda usam o handler fatal.
+- `nucleo/cpu/ioapic.rs`: localiza os IOAPICs pela tabela ACPI MADT e mantem suas entradas mascaradas.
+- `nucleo/cpu/interrupcoes.rs`: carrega a IDT sem mensagem e mantem as interrupcoes da CPU desabilitadas.
 - `nucleo/segurança/quando.rs`: orquestra em ordem as etapas de exibicao do nucleo para evitar execucao fora de sequencia.
 - `nucleo/segurança/o_que.rs`: inicializa a memoria pertencente ao nucleo e exibe o estado de protecao apos a inicializacao bem-sucedida.
 - `nucleo/memoria/enderecos.rs`: interpreta o mapa UEFI e lista os intervalos de RAM.
 - `nucleo/memoria/paginas.rs`: aloca e libera paginas fisicas entre as regioes UEFI convencionais, com limite de 64 GiB.
 - `nucleo/memoria/regioes.rs`: reserva explicitamente a imagem do nucleo, o framebuffer e os dados de boot.
 - `nucleo/memoria/virtual.rs`: cria um mapeamento identidade de 64 GiB, protege as secoes do nucleo, habilita NX e CR0.WP e marca o framebuffer como nao cacheavel.
-- `nucleo/memoria/heap.rs`: fornece o alocador global do nucleo baseado em paginas fisicas.
+- `nucleo/memoria/memoria_dinamica.rs`: fornece o alocador global do nucleo baseado em paginas fisicas.
 - `nucleo/Rust`: executavel ELF independente, produzido a partir de `nucleo/nucleo.rs` e incluido na pasta `NUCLEO` da ISO 9660.
 - `nucleo/linker.ld`: posiciona o nucleo ELF na memoria fisica a partir de 1 MiB.
 - `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI` e `inicio.so` na raiz.
 - `compilar.sh`: compila os estagios UEFI e o nucleo freestanding, e gera a imagem FAT e a ISO.
 - `.vscode/tasks.json`: tarefas para compilar e executar no QEMU.
-- `RustOS_Beta_v0.1_Construcao_0.5.2026.iso`: imagem ISO gerada na raiz do projeto.
+- `RustOS_Beta_v0.1_Construcao_0.6.2026.iso`: imagem ISO gerada na raiz do projeto.
 
 Os estagios sao binarios separados: o firmware inicia `BOOTX64.EFI`, que carrega `inicio.so` de `inicio.img`; `inicio.so` procura e carrega `nucleo/Rust` diretamente dos setores da ISO 9660. O nucleo recebe do carregador os dados do framebuffer e, apos a transferencia, executa sem os servicos de boot UEFI.
 
@@ -43,17 +47,24 @@ NUCLEO/RUST
 
 O nome `NUCLEO/RUST` pode aparecer como `NUCLEO/RUST.;1` ao listar a ISO, devido ao formato ISO 9660.
 
-Na tela, o nucleo mostra:
+Na tela, o nucleo mostra as etapas nesta ordem:
 
 ```text
-{1} RustOS Beta v0.1 Construção 0.5.2026
-{2} Caminho: nucleo/Rust
-{3} Organização de segurança de execução
-{4} Lista de endereços da memoria RAM
+{   1} RustOS Beta v0.1 Construção 0.6.2026
+{   2} Caminho: nucleo/Rust
+{   3} Organização de segurança de execução
+{   4} Lista de endereços da memoria RAM
+{   5} <intervalo de memoria>
 {próximo número} RAM proteção ativo
+{próximo número} APCI iniciado
+{próximo número} EFI: UEFI 2.70
 ```
 
-Após os intervalos, o nucleo exibe “RAM proteção ativo” com o próximo número de linha. O núcleo inicializa um alocador de páginas físicas usando apenas memória convencional UEFI, reserva as áreas do núcleo/framebuffer/dados de boot e instala um mapeamento identidade dos primeiros 64 GiB. Código do núcleo fica somente leitura/executável; dados ficam leitura/escrita/não executáveis; o restante do mapeamento fica não executável. NX e proteção de escrita (CR0.WP) são habilitados, e o framebuffer é mapeado como não cacheável. O heap global usa páginas físicas e executa um teste de alocação na inicialização. O alocador gerencia endereços físicos abaixo de 64 GiB. Ainda não há processos de usuário nem separação de espaços de endereçamento por processo. Arquivos permanecem no armazenamento e seus dados são carregados na RAM quando usados. A listagem mostra endereços e tipos UEFI; as linhas rolam a tela quando necessário.
+O número da versão EFI e obtido de `SystemTable.Header.Revision`; o exemplo `2.70` pode variar conforme o firmware. Essa linha aparece depois da inicializacao do APIC. O loader tambem passa o RSDP ACPI ao nucleo, que usa a MADT para localizar os IOAPICs.
+
+Apos os intervalos, o nucleo exibe “RAM proteção ativo”, inicializa o APIC local e os IOAPICs e mostra a versao EFI. A IDT esta carregada, mas todos os vetores ainda usam um handler fatal; as interrupcoes da CPU permanecem desabilitadas e as entradas do IOAPIC ficam mascaradas. Ainda nao ha tratamento ou roteamento de IRQs.
+
+O núcleo inicializa um alocador de páginas físicas usando apenas memória convencional UEFI, reserva as áreas do núcleo/framebuffer/dados de boot e instala um mapeamento identidade dos primeiros 64 GiB. Código do núcleo fica somente leitura/executável; dados ficam leitura/escrita/não executáveis; o restante do mapeamento fica não executável. NX e proteção de escrita (CR0.WP) são habilitados, e o framebuffer é mapeado como não cacheável. O heap global usa páginas físicas e executa um teste de alocação na inicialização. O alocador gerencia endereços físicos abaixo de 64 GiB. Ainda não há processos de usuário nem separação de espaços de endereçamento por processo. Arquivos permanecem no armazenamento e seus dados são carregados na RAM quando usados. A listagem mostra endereços e tipos UEFI; as linhas rolam a tela quando necessário.
 
 ## Requisitos
 
