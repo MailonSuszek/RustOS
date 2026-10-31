@@ -1,3 +1,7 @@
+// Nome: RustOS Beta
+// Versao: v0.1
+// Construcao: 0.5.2026
+// Funcao: Interpreta e exibe os intervalos de memoria informados pelo mapa UEFI.
 use core::fmt::{self, Write};
 use core::ptr;
 
@@ -18,7 +22,7 @@ pub(super) enum ErroMapa {
 	LinhaMuitoLonga,
 }
 
-pub(super) fn exibir(boot_info: &BootInfo) -> Result<(), ErroMapa> {
+pub(super) fn exibir(boot_info: &BootInfo) -> Result<(usize, usize), ErroMapa> {
 	if boot_info.memory_map.is_null() || boot_info.memory_map_size == 0 {
 		return Err(ErroMapa::MapaAusente);
 	}
@@ -84,7 +88,7 @@ pub(super) fn exibir(boot_info: &BootInfo) -> Result<(), ErroMapa> {
 			.ok_or(ErroMapa::EnderecoInvalido)?;
 	}
 
-	Ok(())
+	Ok((y, line_number))
 }
 
 fn tsc_frequency_hz() -> Option<u64> {
@@ -147,20 +151,20 @@ fn uso_memoria(memory_type: u32) -> &'static str {
 	}
 }
 
-struct LinhaBuffer {
+pub(super) struct LinhaBuffer {
 	bytes: [u8; 96],
 	len: usize,
 }
 
 impl LinhaBuffer {
-	const fn novo() -> Self {
+	pub(super) const fn novo() -> Self {
 		Self {
 			bytes: [0; 96],
 			len: 0,
 		}
 	}
 
-	fn como_str(&self) -> Result<&str, fmt::Error> {
+	pub(super) fn como_str(&self) -> Result<&str, fmt::Error> {
 		core::str::from_utf8(&self.bytes[..self.len]).map_err(|_| fmt::Error)
 	}
 }

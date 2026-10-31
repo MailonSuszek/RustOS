@@ -1,6 +1,7 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.4.2026
+// Construcao: 0.5.2026
+// Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
 
@@ -9,8 +10,18 @@ use core::ptr;
 
 #[path = "segurança/quando.rs"]
 mod quando;
+#[path = "segurança/o_que.rs"]
+mod o_que;
 #[path = "memoria/enderecos.rs"]
 mod enderecos;
+#[path = "memoria/heap.rs"]
+mod heap;
+#[path = "memoria/paginas.rs"]
+mod paginas;
+#[path = "memoria/regioes.rs"]
+mod regioes;
+#[path = "memoria/virtual.rs"]
+mod virtual_memory;
 
 const PIXEL_RGB_RESERVED_8: u32 = 0;
 const PIXEL_BGR_RESERVED_8: u32 = 1;
@@ -42,6 +53,17 @@ pub extern "C" fn kernel_main(boot_info: *const BootInfo) -> ! {
 			PIXEL_RGB_RESERVED_8 | PIXEL_BGR_RESERVED_8
 		)
 	{
+		halt();
+	}
+
+	if let Err(error) = o_que::inicializar_nucleo(boot_info) {
+		let message = match error {
+			o_que::ErroInicializacao::AlocadorPaginas(_) => "Erro alocador RAM",
+			o_que::ErroInicializacao::ReservaRegioes(_) => "Erro reserva nucleo",
+			o_que::ErroInicializacao::ProtecaoVirtual(_) => "Erro protecao virtual",
+			o_que::ErroInicializacao::HeapNucleo(_) => "Erro heap nucleo",
+		};
+		draw_text(boot_info, 8, 48, message);
 		halt();
 	}
 

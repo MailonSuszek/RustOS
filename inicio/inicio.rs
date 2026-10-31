@@ -1,6 +1,7 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.4.2026
+// Construcao: 0.5.2026
+// Funcao: Configura o framebuffer, carrega o nucleo ELF da ISO e transfere o controle.
 #![no_std]
 #![no_main]
 
