@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Interpreta e exibe os intervalos de memoria informados pelo mapa UEFI.
 use core::fmt::{self, Write};
 use core::ptr;
@@ -13,7 +13,6 @@ const FIRST_ADDRESS_LINE: usize = 5;
 pub(super) const LINE_NUMBER_WIDTH: usize = 4;
 pub(super) const LINE_BUFFER_CAPACITY: usize = 96;
 const USAGE_LABEL_WIDTH: usize = 30;
-const LINE_DELAY_MILLISECONDS: u64 = 25;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ErroMapa {
@@ -39,8 +38,6 @@ pub(super) fn exibir(boot_info: &BootInfo) -> Result<(usize, usize), ErroMapa> {
 		&mut y,
 		"{   4} Lista de endereços da memoria RAM",
 	);
-	let tsc_frequency = tsc_frequency_hz();
-	aguardar_linha(tsc_frequency);
 
 	let descriptor_count = boot_info.memory_map_size / boot_info.memory_descriptor_size;
 	let mut line_number = FIRST_ADDRESS_LINE;
@@ -83,53 +80,12 @@ pub(super) fn exibir(boot_info: &BootInfo) -> Result<(usize, usize), ErroMapa> {
 		.map_err(|_| ErroMapa::LinhaMuitoLonga)?;
 		let text = line.como_str().map_err(|_| ErroMapa::LinhaMuitoLonga)?;
 		draw_scrolling_text(boot_info, &mut y, text);
-		aguardar_linha(tsc_frequency);
 		line_number = line_number
 			.checked_add(1)
 			.ok_or(ErroMapa::EnderecoInvalido)?;
 	}
 
 	Ok((y, line_number))
-}
-
-fn tsc_frequency_hz() -> Option<u64> {
-	let maximum_leaf = core::arch::x86_64::__cpuid(0).eax;
-	if maximum_leaf >= 0x15 {
-		let frequency = core::arch::x86_64::__cpuid(0x15);
-		if frequency.eax != 0 && frequency.ebx != 0 && frequency.ecx != 0 {
-			return u64::from(frequency.ecx)
-				.checked_mul(u64::from(frequency.ebx))
-				.map(|cycles| cycles / u64::from(frequency.eax))
-				.filter(|cycles| *cycles != 0);
-		}
-	}
-
-	if maximum_leaf >= 0x16 {
-		let frequency = core::arch::x86_64::__cpuid(0x16).eax;
-		if frequency != 0 {
-			return u64::from(frequency).checked_mul(1_000_000);
-		}
-	}
-	None
-}
-
-fn aguardar_linha(tsc_frequency: Option<u64>) {
-	if let Some(cycles_per_second) = tsc_frequency {
-		if let Some(cycles_to_wait) = cycles_per_second
-			.checked_mul(LINE_DELAY_MILLISECONDS)
-			.map(|cycles| cycles / 1_000)
-		{
-			let start = unsafe { core::arch::x86_64::_rdtsc() };
-			while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < cycles_to_wait {
-				core::hint::spin_loop();
-			}
-			return;
-		}
-	}
-
-	for _ in 0..4_000_000 {
-		core::hint::spin_loop();
-	}
 }
 
 fn uso_memoria(memory_type: u32) -> &'static str {

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
@@ -14,6 +14,10 @@ mod quando;
 mod aleatorio;
 #[path = "segurança/o_que.rs"]
 mod o_que;
+#[path = "segurança/secureboot.rs"]
+mod secureboot;
+#[path = "info/mod.rs"]
+mod info;
 #[path = "cpu/apic.rs"]
 mod apic;
 #[path = "cpu/idt.rs"]
@@ -22,6 +26,8 @@ mod idt;
 mod ioapic;
 #[path = "cpu/interrupcoes.rs"]
 mod interrupcoes;
+#[path = "cpu/tsc.rs"]
+mod tsc;
 #[path = "memoria/enderecos.rs"]
 mod enderecos;
 #[path = "memoria/mapa_memoria.rs"]
@@ -30,6 +36,8 @@ mod mapa_memoria;
 mod memoria_dinamica;
 #[path = "memoria/paginas.rs"]
 mod paginas;
+#[path = "memoria/operacao.rs"]
+mod operacao;
 #[path = "memoria/ponteiros.rs"]
 mod ponteiros;
 #[path = "memoria/regioes.rs"]
@@ -64,6 +72,18 @@ pub struct BootInfo {
 	firmware_table_count: usize,
 	rng_seed: [u8; 32],
 	rng_seed_status: u32,
+	secure_boot: u32,
+	smbios_version: u32,
+	dmi_fabricante: [u8; 64],
+	dmi_fabricante_len: usize,
+	dmi_modelo: [u8; 64],
+	dmi_modelo_len: usize,
+	dmi_bios: [u8; 64],
+	dmi_bios_len: usize,
+	memoria_slots_total: u32,
+	memoria_slots_ocupados: u32,
+	memoria_canais_total: u32,
+	memoria_canais_ocupados: u32,
 }
 
 #[no_mangle]
@@ -171,6 +191,29 @@ fn draw_scrolling_text(boot_info: &BootInfo, y: &mut usize, text: &str) {
 		}
 	}
 	*y = y.saturating_add(LINE_HEIGHT);
+	aguardar_linha();
+}
+
+/// Pausa entre linhas para que a listagem apareca uma por uma.
+fn aguardar_linha() {
+	const LINE_DELAY_MILLISECONDS: u64 = 25;
+
+	if let Some(cycles_per_second) = tsc::frequencia_hz() {
+		if let Some(cycles_to_wait) = cycles_per_second
+			.checked_mul(LINE_DELAY_MILLISECONDS)
+			.map(|cycles| cycles / 1_000)
+		{
+			let start = unsafe { core::arch::x86_64::_rdtsc() };
+			while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(start) < cycles_to_wait {
+				core::hint::spin_loop();
+			}
+			return;
+		}
+	}
+
+	for _ in 0..4_000_000 {
+		core::hint::spin_loop();
+	}
 }
 
 fn scroll_up(boot_info: &BootInfo, amount: usize) {
@@ -241,6 +284,8 @@ fn glyph(character: char) -> [u8; 8] {
 		' ' => [0; 8],
 		'.' => [0, 0, 0, 0, 0, 0b01100, 0b01100, 0],
 		'-' => [0, 0, 0, 0b11111, 0, 0, 0, 0],
+		',' => [0, 0, 0, 0, 0, 0b00110, 0b00100, 0b01000],
+		'+' => [0, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0, 0],
 		':' => [0, 0b01100, 0b01100, 0, 0b01100, 0b01100, 0, 0],
 		'=' => [0, 0, 0b11111, 0, 0b11111, 0, 0, 0],
 		'?' => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100, 0],
@@ -298,6 +343,7 @@ fn glyph(character: char) -> [u8; 8] {
 		'y' => [0, 0, 0b10001, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110],
 		'z' => [0, 0, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111, 0],
 		'ç' => [0, 0, 0b01110, 0b10000, 0b10000, 0b10001, 0b01110, 0b00100],
+		'ê' => [0b00100, 0b01010, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110, 0],
 		'ã' => [0b01010, 0b00101, 0, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111],
 		_ => [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0, 0b00100, 0],
 	}

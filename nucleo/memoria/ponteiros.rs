@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Exibe os enderecos das tabelas de configuracao UEFI recebidos no boot.
 use core::fmt::{self, Write};
 
@@ -17,13 +17,9 @@ pub(super) fn exibir(
 	y: &mut usize,
 	line_number: usize,
 ) -> Result<usize, fmt::Error> {
+	let mut line_number = line_number;
 	let mut line = LinhaBuffer::novo();
-	write!(
-		&mut line,
-		"{{{:>width$}}} UEFI tabelas:",
-		line_number,
-		width = LINE_NUMBER_WIDTH
-	)?;
+	iniciar_linha(&mut line, line_number)?;
 
 	let table_count = boot_info.firmware_table_count.min(MAX_FIRMWARE_TABLES);
 	if table_count == 0 {
@@ -41,7 +37,8 @@ pub(super) fn exibir(
 			let separator_length = usize::from(line.tamanho() > 0);
 			if line.tamanho() + separator_length + item_length > LINE_BUFFER_CAPACITY {
 				draw_scrolling_text(boot_info, y, line.como_str()?);
-				line.limpar();
+				line_number = line_number.checked_add(1).ok_or(fmt::Error)?;
+				iniciar_linha(&mut line, line_number)?;
 			}
 			if line.tamanho() > 0 {
 				write!(&mut line, " ")?;
@@ -52,4 +49,14 @@ pub(super) fn exibir(
 
 	draw_scrolling_text(boot_info, y, line.como_str()?);
 	line_number.checked_add(1).ok_or(fmt::Error)
+}
+
+fn iniciar_linha(line: &mut LinhaBuffer, line_number: usize) -> fmt::Result {
+	line.limpar();
+	write!(
+		line,
+		"{{{:>width$}}} UEFI tabelas:",
+		line_number,
+		width = LINE_NUMBER_WIDTH
+	)
 }

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Mantem o CRNG ChaCha20 do nucleo para produzir bytes imprevisiveis.
 use core::fmt::{self, Write};
 use core::ptr;

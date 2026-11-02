@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Configura o framebuffer, carrega o nucleo ELF da ISO e transfere o controle.
 #![no_std]
 #![no_main]
@@ -78,6 +78,25 @@ struct EfiConfigurationTable {
 	vendor_table: *const c_void,
 }
 
+#[repr(C)]
+struct RuntimeServices {
+	header: [u8; 24],
+	_get_time: usize,
+	_set_time: usize,
+	_get_wakeup_time: usize,
+	_set_wakeup_time: usize,
+	_set_virtual_address_map: usize,
+	_convert_pointer: usize,
+	get_variable: GetVariable,
+	_get_next_variable_name: usize,
+	_set_variable: usize,
+	_get_next_high_monotonic_count: usize,
+	_reset_system: usize,
+	_update_capsule: usize,
+	_query_capsule_capabilities: usize,
+	_query_variable_info: usize,
+}
+
 type AllocatePages =
 	extern "efiapi" fn(u32, u32, usize, *mut u64) -> Status;
 type FreePages = extern "efiapi" fn(u64, usize) -> Status;
@@ -102,6 +121,13 @@ type LocateHandleBuffer = extern "efiapi" fn(
 ) -> Status;
 type LocateProtocol =
 	extern "efiapi" fn(*const Guid, *mut c_void, *mut *mut c_void) -> Status;
+type GetVariable = extern "efiapi" fn(
+	*const u16,
+	*const Guid,
+	*mut u32,
+	*mut usize,
+	*mut c_void,
+) -> Status;
 type GetRng = extern "efiapi" fn(*mut RngProtocol, *const Guid, usize, *mut u8) -> Status;
 type Tcg2SubmitCommand = extern "efiapi" fn(
 	*mut Tcg2Protocol,
@@ -232,6 +258,18 @@ struct BootInfo {
 	firmware_table_count: usize,
 	rng_seed: [u8; RNG_SEED_SIZE],
 	rng_seed_status: u32,
+	secure_boot: u32,
+	smbios_version: u32,
+	dmi_fabricante: [u8; DMI_STRING_MAX],
+	dmi_fabricante_len: usize,
+	dmi_modelo: [u8; DMI_STRING_MAX],
+	dmi_modelo_len: usize,
+	dmi_bios: [u8; DMI_STRING_MAX],
+	dmi_bios_len: usize,
+	memoria_slots_total: u32,
+	memoria_slots_ocupados: u32,
+	memoria_canais_total: u32,
+	memoria_canais_ocupados: u32,
 }
 
 #[repr(C)]
@@ -323,6 +361,50 @@ const TCG2_PROTOCOL_GUID: Guid = Guid {
 	data4: [0x93, 0x0b, 0xe4, 0xd7, 0x6d, 0xb2, 0x72, 0x0f],
 };
 
+const EFI_GLOBAL_VARIABLE_GUID: Guid = Guid {
+	data1: 0x8be4_df61,
+	data2: 0x93ca,
+	data3: 0x11d2,
+	data4: [0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c],
+};
+
+const SECURE_BOOT_VARIABLE: [u16; 11] = [
+	0x0053, 0x0065, 0x0063, 0x0075, 0x0072, 0x0065, 0x0042, 0x006f, 0x006f, 0x0074, 0x0000,
+];
+
+const SECURE_BOOT_DESATIVADO: u32 = 0;
+const SECURE_BOOT_ATIVO: u32 = 1;
+
+const SMBIOS_ANCHOR: [u8; 4] = *b"_SM_";
+const SMBIOS3_ANCHOR: [u8; 5] = *b"_SM3_";
+const SMBIOS_MAJOR_OFFSET: usize = 6;
+const SMBIOS_MINOR_OFFSET: usize = 7;
+const SMBIOS3_MAJOR_OFFSET: usize = 7;
+const SMBIOS3_MINOR_OFFSET: usize = 8;
+
+const DMI_STRING_MAX: usize = 64;
+const SMBIOS_TYPE_BIOS: u8 = 0;
+const SMBIOS_TYPE_SYSTEM: u8 = 1;
+const SMBIOS_TYPE_END: u8 = 127;
+const SMBIOS_2_TABLE_ADDRESS_OFFSET: usize = 0x18;
+const SMBIOS_2_TABLE_LENGTH_OFFSET: usize = 0x16;
+const SMBIOS_3_TABLE_ADDRESS_OFFSET: usize = 0x10;
+const SMBIOS_3_TABLE_LENGTH_OFFSET: usize = 0x0c;
+const DMI_BIOS_VENDOR_OFFSET: usize = 0x04;
+const DMI_BIOS_VERSION_OFFSET: usize = 0x05;
+const DMI_SYSTEM_MANUFACTURER_OFFSET: usize = 0x04;
+const DMI_SYSTEM_PRODUCT_OFFSET: usize = 0x05;
+
+const SMBIOS_TYPE_PHYSICAL_MEMORY_ARRAY: u8 = 16;
+const SMBIOS_TYPE_MEMORY_DEVICE: u8 = 17;
+const SMBIOS_TYPE_MEMORY_CHANNEL: u8 = 37;
+const MAX_MEMORY_CHANNELS: usize = 16;
+const SMBIOS_MEMORY_DEVICE_COUNT_OFFSET: usize = 0x0D;
+const SMBIOS_MEMORY_DEVICE_SIZE_OFFSET: usize = 0x0C;
+const SMBIOS_MEMORY_DEVICE_EXTENDED_SIZE_OFFSET: usize = 0x1C;
+const SMBIOS_MEMORY_DEVICE_BANK_LOCATOR_OFFSET: usize = 0x11;
+const SMBIOS_MEMORY_CHANNEL_DEVICE_COUNT_OFFSET: usize = 0x06;
+
 #[no_mangle]
 extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable) -> Status {
 	if system_table.is_null() {
@@ -332,6 +414,7 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 	unsafe {
 		let acpi_rsdp = find_acpi_rsdp(&*system_table);
 		let efi_revision = (*system_table).header.revision;
+		let secure_boot = secure_boot_ativo(&*system_table);
 		let boot_services = (*system_table).boot_services;
 		if boot_services.is_null() {
 			halt();
@@ -340,7 +423,11 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 		let mut boot_info = configure_frame_buffer(boot_services);
 		boot_info.acpi_rsdp = acpi_rsdp;
 		boot_info.efi_revision = efi_revision;
+		boot_info.secure_boot = secure_boot;
 		copy_firmware_table_pointers(&*system_table, &mut boot_info);
+		boot_info.smbios_version = obter_versao_smbios(&boot_info);
+		obter_dmi(&mut boot_info);
+		obter_memoria(&mut boot_info);
 	match obter_seed(boot_services) {
 		Ok(seed) => {
 			boot_info.rng_seed = seed;
@@ -371,8 +458,30 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 	}
 }
 
-unsafe fn find_acpi_rsdp(system_table: &SystemTable) -> *const u8 {
-	if system_table.configuration_table.is_null() || system_table.number_of_table_entries == 0 {
+unsafe fn secure_boot_ativo(system_table: &SystemTable) -> u32 {
+	let runtime_services = system_table.runtime_services;
+	if runtime_services.is_null() {
+		return SECURE_BOOT_DESATIVADO;
+	}
+	let runtime_services = &*(runtime_services as *const RuntimeServices);
+	let mut attributes = 0u32;
+	let mut data_size = 1usize;
+	let mut data = 0u8;
+	let status = (runtime_services.get_variable)(
+		SECURE_BOOT_VARIABLE.as_ptr(),
+		&EFI_GLOBAL_VARIABLE_GUID,
+		&mut attributes,
+		&mut data_size,
+		(&mut data as *mut u8).cast(),
+	);
+	if status == SUCCESS && data_size == 1 && data == 1 {
+		SECURE_BOOT_ATIVO
+	} else {
+		SECURE_BOOT_DESATIVADO
+	}
+}
+
+unsafe fn find_acpi_rsdp(system_table: &SystemTable) -> *const u8 {	if system_table.configuration_table.is_null() || system_table.number_of_table_entries == 0 {
 		return core::ptr::null();
 	}
 	let tables = core::slice::from_raw_parts(
@@ -607,6 +716,417 @@ unsafe fn copy_firmware_table_pointers(system_table: &SystemTable, boot_info: &m
 	}
 }
 
+unsafe fn obter_versao_smbios(boot_info: &BootInfo) -> u32 {
+	let table_count = boot_info.firmware_table_count.min(MAX_FIRMWARE_TABLES);
+	for wanted_kind in [TABLE_KIND_SMBIOS3, TABLE_KIND_SMBIOS] {
+		for table in &boot_info.firmware_tables[..table_count] {
+			if table.kind != wanted_kind || table.address == 0 {
+				continue;
+			}
+			let entry = table.address as *const u8;
+			let (anchor, major_offset, minor_offset): (&[u8], usize, usize) =
+				if wanted_kind == TABLE_KIND_SMBIOS3 {
+					(
+						&SMBIOS3_ANCHOR,
+						SMBIOS3_MAJOR_OFFSET,
+						SMBIOS3_MINOR_OFFSET,
+					)
+				} else {
+					(&SMBIOS_ANCHOR, SMBIOS_MAJOR_OFFSET, SMBIOS_MINOR_OFFSET)
+				};
+			if !anchor_matches(entry, anchor) {
+				continue;
+			}
+			let major = entry.add(major_offset).read_volatile();
+			let minor = entry.add(minor_offset).read_volatile();
+			return ((major as u32) << 8) | minor as u32;
+		}
+	}
+	0
+}
+
+unsafe fn obter_dmi(boot_info: &mut BootInfo) {
+	let Some((table_address, table_length)) = localizar_tabela_smbios(boot_info) else {
+		return;
+	};
+	let end = (table_address as usize).saturating_add(table_length) as *const u8;
+	let mut structure = table_address as *const u8;
+	while structure < end {
+		let kind = structure.read_volatile();
+		let length = structure.add(1).read_volatile() as usize;
+		if length < 4 {
+			break;
+		}
+		if kind == SMBIOS_TYPE_BIOS {
+			if let Some(source) =
+				string_smbios(structure, length, DMI_BIOS_VENDOR_OFFSET, end)
+			{
+				copiar_texto(
+					&mut boot_info.dmi_bios,
+					&mut boot_info.dmi_bios_len,
+					source,
+					end,
+				);
+			}
+			if let Some(source) =
+				string_smbios(structure, length, DMI_BIOS_VERSION_OFFSET, end)
+			{
+				anexar_texto(
+					&mut boot_info.dmi_bios,
+					&mut boot_info.dmi_bios_len,
+					source,
+					end,
+				);
+			}
+		} else if kind == SMBIOS_TYPE_SYSTEM {
+			if let Some(source) = string_smbios(
+				structure,
+				length,
+				DMI_SYSTEM_MANUFACTURER_OFFSET,
+				end,
+			) {
+				copiar_texto(
+					&mut boot_info.dmi_fabricante,
+					&mut boot_info.dmi_fabricante_len,
+					source,
+					end,
+				);
+			}
+			if let Some(source) =
+				string_smbios(structure, length, DMI_SYSTEM_PRODUCT_OFFSET, end)
+			{
+				copiar_texto(
+					&mut boot_info.dmi_modelo,
+					&mut boot_info.dmi_modelo_len,
+					source,
+					end,
+				);
+			}
+		}
+		if kind == SMBIOS_TYPE_END {
+			break;
+		}
+		structure = proxima_estrutura(structure, length, end);
+		if structure.is_null() {
+			break;
+		}
+	}
+}
+
+unsafe fn obter_memoria(boot_info: &mut BootInfo) {
+	let Some((table_address, table_length)) = localizar_tabela_smbios(boot_info) else {
+		return;
+	};
+	let end = (table_address as usize).saturating_add(table_length) as *const u8;
+	let mut structure = table_address as *const u8;
+	let mut slots_total = 0u32;
+	let mut slots_ocupados = 0u32;
+	let mut dispositivos = 0u32;
+	let mut canais_total = 0u32;
+	let mut canais_ocupados = 0u32;
+	let mut tipo_37_presente = false;
+	let mut bancos: [*const u8; MAX_MEMORY_CHANNELS] =
+		[core::ptr::null(); MAX_MEMORY_CHANNELS];
+	let mut bancos_ocupados: [*const u8; MAX_MEMORY_CHANNELS] =
+		[core::ptr::null(); MAX_MEMORY_CHANNELS];
+	let mut banco_count = 0usize;
+	let mut banco_ocupado_count = 0usize;
+
+	while structure < end {
+		let kind = structure.read_volatile();
+		let length = structure.add(1).read_volatile() as usize;
+		if length < 4 {
+			break;
+		}
+		if kind == SMBIOS_TYPE_PHYSICAL_MEMORY_ARRAY && length >= 0x0F {
+			slots_total =
+				ler_u16(structure.add(SMBIOS_MEMORY_DEVICE_COUNT_OFFSET)) as u32;
+		} else if kind == SMBIOS_TYPE_MEMORY_DEVICE {
+			dispositivos = dispositivos.saturating_add(1);
+			let size = ler_u16(structure.add(SMBIOS_MEMORY_DEVICE_SIZE_OFFSET));
+			let ocupado = if size == 0x7FFF {
+				length >= 0x20
+					&& ler_u32(structure.add(SMBIOS_MEMORY_DEVICE_EXTENDED_SIZE_OFFSET)) != 0
+			} else {
+				size != 0
+			};
+			if ocupado {
+				slots_ocupados = slots_ocupados.saturating_add(1);
+			}
+			if let Some(banco) = string_smbios(
+				structure,
+				length,
+				SMBIOS_MEMORY_DEVICE_BANK_LOCATOR_OFFSET,
+				end,
+			) {
+				if !contem_texto(&bancos, banco_count, banco) {
+					if banco_count < MAX_MEMORY_CHANNELS {
+						bancos[banco_count] = banco;
+						banco_count += 1;
+					}
+				}
+				if ocupado && !contem_texto(&bancos_ocupados, banco_ocupado_count, banco) {
+					if banco_ocupado_count < MAX_MEMORY_CHANNELS {
+						bancos_ocupados[banco_ocupado_count] = banco;
+						banco_ocupado_count += 1;
+					}
+				}
+			}
+		} else if kind == SMBIOS_TYPE_MEMORY_CHANNEL {
+			tipo_37_presente = true;
+			canais_total = canais_total.saturating_add(1);
+			if length > SMBIOS_MEMORY_CHANNEL_DEVICE_COUNT_OFFSET {
+				let devices = structure
+					.add(SMBIOS_MEMORY_CHANNEL_DEVICE_COUNT_OFFSET)
+					.read_volatile();
+				if devices > 0 {
+					canais_ocupados = canais_ocupados.saturating_add(1);
+				}
+			}
+		}
+		if kind == SMBIOS_TYPE_END {
+			break;
+		}
+		structure = proxima_estrutura(structure, length, end);
+		if structure.is_null() {
+			break;
+		}
+	}
+
+	if slots_total == 0 {
+		slots_total = dispositivos;
+	}
+	if !tipo_37_presente {
+		if banco_count > 0 {
+			canais_total = banco_count as u32;
+			canais_ocupados = banco_ocupado_count as u32;
+		} else if dispositivos > 0 {
+			canais_total = 1;
+			canais_ocupados = u32::from(slots_ocupados > 0);
+		}
+	}
+
+	boot_info.memoria_slots_total = slots_total;
+	boot_info.memoria_slots_ocupados = slots_ocupados;
+	boot_info.memoria_canais_total = canais_total;
+	boot_info.memoria_canais_ocupados = canais_ocupados;
+}
+
+unsafe fn contem_texto(
+	textos: &[*const u8; MAX_MEMORY_CHANNELS],
+	count: usize,
+	candidate: *const u8,
+) -> bool {
+	for index in 0..count {
+		if mesmo_texto(textos[index], candidate) {
+			return true;
+		}
+	}
+	false
+}
+
+unsafe fn mesmo_texto(left: *const u8, right: *const u8) -> bool {
+	let mut index = 0;
+	loop {
+		let left_byte = left.add(index).read_volatile();
+		let right_byte = right.add(index).read_volatile();
+		if left_byte != right_byte {
+			return false;
+		}
+		if left_byte == 0 {
+			return true;
+		}
+		index += 1;
+	}
+}
+
+unsafe fn localizar_tabela_smbios(boot_info: &BootInfo) -> Option<(u64, usize)> {
+	let table_count = boot_info.firmware_table_count.min(MAX_FIRMWARE_TABLES);
+	for wanted_kind in [TABLE_KIND_SMBIOS3, TABLE_KIND_SMBIOS] {
+		for table in &boot_info.firmware_tables[..table_count] {
+			if table.kind != wanted_kind || table.address == 0 {
+				continue;
+			}
+			let entry = table.address as *const u8;
+			let (anchor, address_offset, length_offset): (&[u8], usize, usize) =
+				if wanted_kind == TABLE_KIND_SMBIOS3 {
+					(
+						&SMBIOS3_ANCHOR,
+						SMBIOS_3_TABLE_ADDRESS_OFFSET,
+						SMBIOS_3_TABLE_LENGTH_OFFSET,
+					)
+				} else {
+					(
+						&SMBIOS_ANCHOR,
+						SMBIOS_2_TABLE_ADDRESS_OFFSET,
+						SMBIOS_2_TABLE_LENGTH_OFFSET,
+					)
+				};
+			if !anchor_matches(entry, anchor) {
+				continue;
+			}
+			let address = if wanted_kind == TABLE_KIND_SMBIOS3 {
+				ler_u64(entry.add(address_offset))
+			} else {
+				ler_u32(entry.add(address_offset)) as u64
+			};
+			let length = if wanted_kind == TABLE_KIND_SMBIOS3 {
+				ler_u32(entry.add(length_offset)) as usize
+			} else {
+				ler_u16(entry.add(length_offset)) as usize
+			};
+			if address != 0 && length != 0 {
+				return Some((address, length));
+			}
+		}
+	}
+	None
+}
+
+unsafe fn string_smbios(
+	structure: *const u8,
+	length: usize,
+	field_offset: usize,
+	end: *const u8,
+) -> Option<*const u8> {
+	let index = structure.add(field_offset).read_volatile();
+	if index == 0 {
+		return None;
+	}
+	let mut current = structure.add(length);
+	if current >= end || current.read_volatile() == 0 {
+		return None;
+	}
+	let mut current_index = 1u8;
+	while current < end {
+		if current_index == index {
+			return Some(current);
+		}
+		while current < end && current.read_volatile() != 0 {
+			current = current.add(1);
+		}
+		if current >= end {
+			return None;
+		}
+		current = current.add(1);
+		if current >= end || current.read_volatile() == 0 {
+			return None;
+		}
+		current_index = current_index.checked_add(1)?;
+	}
+	None
+}
+
+unsafe fn proxima_estrutura(
+	structure: *const u8,
+	length: usize,
+	end: *const u8,
+) -> *const u8 {
+	let mut next = structure.add(length);
+	if next >= end {
+		return core::ptr::null();
+	}
+	loop {
+		if next >= end {
+			return core::ptr::null();
+		}
+		let byte = next.read_volatile();
+		next = next.add(1);
+		if byte == 0 {
+			if next >= end {
+				return core::ptr::null();
+			}
+			if next.read_volatile() == 0 {
+				return next.add(1);
+			}
+		}
+	}
+}
+
+unsafe fn copiar_texto(
+	dest: &mut [u8],
+	dest_len: &mut usize,
+	source: *const u8,
+	end: *const u8,
+) {
+	let mut count = 0;
+	while count < dest.len() && source.add(count) < end {
+		let byte = source.add(count).read_volatile();
+		if byte == 0 {
+			break;
+		}
+		dest[count] = if (0x20..=0x7e).contains(&byte) {
+			byte
+		} else {
+			b'?'
+		};
+		count += 1;
+	}
+	*dest_len = count;
+}
+
+unsafe fn anexar_texto(
+	dest: &mut [u8],
+	dest_len: &mut usize,
+	source: *const u8,
+	end: *const u8,
+) {
+	if *dest_len == 0 {
+		copiar_texto(dest, dest_len, source, end);
+		return;
+	}
+	if *dest_len < dest.len() {
+		dest[*dest_len] = b' ';
+		*dest_len += 1;
+	}
+	let mut count = *dest_len;
+	let mut index = 0;
+	while count < dest.len() && source.add(index) < end {
+		let byte = source.add(index).read_volatile();
+		if byte == 0 {
+			break;
+		}
+		dest[count] = if (0x20..=0x7e).contains(&byte) {
+			byte
+		} else {
+			b'?'
+		};
+		count += 1;
+		index += 1;
+	}
+	*dest_len = count;
+}
+
+unsafe fn anchor_matches(entry: *const u8, anchor: &[u8]) -> bool {
+	for (index, expected) in anchor.iter().enumerate() {
+		if entry.add(index).read_volatile() != *expected {
+			return false;
+		}
+	}
+	true
+}
+
+unsafe fn ler_u16(ptr: *const u8) -> u16 {
+	u16::from_le_bytes([ptr.read_volatile(), ptr.add(1).read_volatile()])
+}
+
+unsafe fn ler_u32(ptr: *const u8) -> u32 {
+	u32::from_le_bytes([
+		ptr.read_volatile(),
+		ptr.add(1).read_volatile(),
+		ptr.add(2).read_volatile(),
+		ptr.add(3).read_volatile(),
+	])
+}
+
+unsafe fn ler_u64(ptr: *const u8) -> u64 {
+	let mut bytes = [0u8; 8];
+	for (index, byte) in bytes.iter_mut().enumerate() {
+		*byte = ptr.add(index).read_volatile();
+	}
+	u64::from_le_bytes(bytes)
+}
+
 fn guid_matches(left: &Guid, right: &Guid) -> bool {
 	left.data1 == right.data1
 		&& left.data2 == right.data2
@@ -779,6 +1299,18 @@ unsafe fn configure_frame_buffer(boot_services: &mut BootServices) -> BootInfo {
 		firmware_table_count: 0,
 		rng_seed: [0; RNG_SEED_SIZE],
 		rng_seed_status: RNG_SEED_NO_CPU_SUPPORT,
+		secure_boot: SECURE_BOOT_DESATIVADO,
+		smbios_version: 0,
+		dmi_fabricante: [0; DMI_STRING_MAX],
+		dmi_fabricante_len: 0,
+		dmi_modelo: [0; DMI_STRING_MAX],
+		dmi_modelo_len: 0,
+		dmi_bios: [0; DMI_STRING_MAX],
+		dmi_bios_len: 0,
+		memoria_slots_total: 0,
+		memoria_slots_ocupados: 0,
+		memoria_canais_total: 0,
+		memoria_canais_ocupados: 0,
 	}
 }
 

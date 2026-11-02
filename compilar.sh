@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Nome: RustOS Beta
 # Versao: v0.1
-# Construcao: 0.8.2026
+# Construcao: 0.9.2026
 # Funcao: Compila os estagios UEFI e o nucleo, depois gera e valida a ISO inicializavel.
 set -euo pipefail
 
@@ -14,7 +14,7 @@ RUST_KERNEL_SOURCE="${ROOT_DIR}/nucleo/nucleo.rs"
 RUST_KERNEL_LINKER="${ROOT_DIR}/nucleo/linker.ld"
 RUST_KERNEL_BINARY="${ROOT_DIR}/nucleo/Rust"
 EFI_IMAGE="${ROOT_DIR}/inicio/inicio.img"
-ISO="${ROOT_DIR}/RustOS_Beta_v0.1_Construcao_0.8.2026.iso"
+ISO="${ROOT_DIR}/RustOS_Beta_v0.1_Construcao_0.9.2026.iso"
 PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 export PATH
 

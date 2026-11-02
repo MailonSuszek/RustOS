@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Primeiro estagio UEFI; inicia o segundo estagio do RustOS.
 #![no_std]
 #![no_main]

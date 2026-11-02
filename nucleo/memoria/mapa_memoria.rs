@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Reserva as areas de hardware que nao podem ser usadas como RAM comum.
 use core::fmt::{self, Write};
 
@@ -25,11 +25,6 @@ struct Regiao {
 
 const REGIOES: &[Regiao] = &[
 	Regiao {
-		inicio: 0x000c_0000,
-		fim: 0x000f_ffff,
-		rotulo: "Proteção da ROM da BIOS",
-	},
-	Regiao {
 		inicio: 0xfec0_0000,
 		fim: 0xfec1_0fff,
 		rotulo: "Reserva de controle do Chipset",
@@ -53,6 +48,11 @@ const REGIOES: &[Regiao] = &[
 		inicio: 0xff00_0000,
 		fim: 0xffff_ffff,
 		rotulo: "Remover a memoria Flash da BIOS",
+	},
+	Regiao {
+		inicio: 0x000c_0000,
+		fim: 0x000f_ffff,
+		rotulo: "Proteção da ROM da BIOS",
 	},
 ];
 

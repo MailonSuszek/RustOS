@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Configura o mapeamento virtual identidade e as protecoes de paginas do nucleo.
 use core::ptr;
 

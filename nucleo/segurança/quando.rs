@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.8.2026
+// Construcao: 0.9.2026
 // Funcao: Coordena as etapas de inicializacao e exibicao do nucleo em ordem.
 use core::fmt::Write;
 
@@ -15,10 +15,15 @@ enum Etapa {
 	Memoria,
 	Protecao,
 	Apic,
-	Efi,
+	Uefi,
 	Ponteiros,
 	Aleatorio,
 	Video,
+	SecureBoot,
+	Smbios,
+	Dmi,
+	OperacaoMemoria,
+	Tsc,
 }
 
 struct Orquestrador {
@@ -43,11 +48,16 @@ impl Orquestrador {
 			Etapa::Seguranca => Some(Etapa::Memoria),
 			Etapa::Memoria => Some(Etapa::Protecao),
 			Etapa::Protecao => Some(Etapa::Apic),
-			Etapa::Apic => Some(Etapa::Efi),
-			Etapa::Efi => Some(Etapa::Ponteiros),
+			Etapa::Apic => Some(Etapa::Uefi),
+			Etapa::Uefi => Some(Etapa::Ponteiros),
 			Etapa::Ponteiros => Some(Etapa::Aleatorio),
 			Etapa::Aleatorio => Some(Etapa::Video),
-			Etapa::Video => None,
+			Etapa::Video => Some(Etapa::SecureBoot),
+			Etapa::SecureBoot => Some(Etapa::Smbios),
+			Etapa::Smbios => Some(Etapa::Dmi),
+			Etapa::Dmi => Some(Etapa::OperacaoMemoria),
+			Etapa::OperacaoMemoria => Some(Etapa::Tsc),
+			Etapa::Tsc => None,
 		};
 		if self.proxima != Some(etapa) {
 			return Err(ErroOrdem::EtapaForaDeOrdem);
@@ -63,7 +73,7 @@ impl Orquestrador {
 pub(super) enum ErroOrdem {
 	EtapaForaDeOrdem,
 	MapaMemoria(super::enderecos::ErroMapa),
-	LinhaEfi,
+	LinhaUefi,
 	LinhaProtecao,
 	LinhaAleatorio,
 	Apic(apic::ErroApic),
@@ -71,21 +81,29 @@ pub(super) enum ErroOrdem {
 	LinhaApic,
 	LinhaPonteiros,
 	LinhaVideo,
+	LinhaSecureBoot,
+	LinhaSmbios,
+	LinhaDmi,
+	LinhaOperacaoMemoria,
+	LinhaTsc,
 }
 
 pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 	let mut orquestrador = Orquestrador::novo();
 
 	orquestrador.executar(Etapa::Identificacao, || {
-		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.8.2026");
+		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.9.2026");
+		super::aguardar_linha();
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::Caminho, || {
 		draw_text(boot_info, 8, 18, "{   2} Caminho: nucleo/Rust");
+		super::aguardar_linha();
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::Seguranca, || {
 		draw_text(boot_info, 8, 28, "{   3} Organização de segurança de execução");
+		super::aguardar_linha();
 		Ok(())
 	})?;
 	let mut y = 0;
@@ -115,20 +133,9 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 		line_number = line_number.checked_add(1).ok_or(ErroOrdem::LinhaApic)?;
 		Ok(())
 	})?;
-	orquestrador.executar(Etapa::Efi, || {
-		let revision = boot_info.efi_revision;
-		let mut line = LinhaBuffer::novo();
-		write!(
-			&mut line,
-			"{{{:>width$}}} EFI: UEFI {}.{:02}",
-			line_number,
-			revision >> 16,
-			revision & 0xffff,
-			width = LINE_NUMBER_WIDTH
-		)
-		.map_err(|_| ErroOrdem::LinhaEfi)?;
-		draw_scrolling_text(boot_info, &mut y, line.como_str().map_err(|_| ErroOrdem::LinhaEfi)?);
-		line_number = line_number.checked_add(1).ok_or(ErroOrdem::LinhaEfi)?;
+	orquestrador.executar(Etapa::Uefi, || {
+		line_number = super::info::uefi::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaUefi)?;
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::Ponteiros, || {
@@ -144,6 +151,31 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 	orquestrador.executar(Etapa::Video, || {
 		line_number = super::mapa_memoria::exibir(boot_info, &mut y, line_number)
 			.map_err(|_| ErroOrdem::LinhaVideo)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::SecureBoot, || {
+		line_number = super::secureboot::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaSecureBoot)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::Smbios, || {
+		line_number = super::info::smbios::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaSmbios)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::Dmi, || {
+		line_number = super::info::dmi::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaDmi)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::OperacaoMemoria, || {
+		line_number = super::operacao::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaOperacaoMemoria)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::Tsc, || {
+		line_number = super::tsc::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaTsc)?;
 		Ok(())
 	})?;
 
