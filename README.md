@@ -4,7 +4,7 @@
 **Funcao:** Documenta a estrutura, os requisitos, a compilacao e a execucao do RustOS.<br>
 **Nome:** RustOS Beta  
 **Versao:** v0.1  
-**Construcao:** 0.9.2026<br>
+**Construcao:** 0.10.2026<br>
 **Arquitetura:** x86-64  
 **Boot:** UEFI
 
@@ -22,16 +22,18 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `nucleo/cpu/ioapic.rs`: localiza os IOAPICs pela tabela ACPI MADT e mantem suas entradas mascaradas.
 - `nucleo/cpu/interrupcoes.rs`: carrega a IDT sem mensagem e mantem as interrupcoes da CPU desabilitadas.
 - `nucleo/cpu/tsc.rs`: calibra o TSC contra o temporizador PIT, mantem a frequencia em cache para o relogio interno e exibe a velocidade detectada da CPU.
+- `nucleo/cpu/pat.rs`: configura as oito entradas PAT (`WB, WT, UC-, UC, WC, WP, UC-, UC`) quando o processador oferece suporte.
 - `nucleo/segurança/quando.rs`: orquestra em ordem as etapas de exibicao do nucleo para evitar execucao fora de sequencia.
 - `nucleo/segurança/o_que.rs`: inicializa a memoria pertencente ao nucleo e exibe o estado de protecao apos a inicializacao bem-sucedida.
 - `nucleo/segurança/aleatorio.rs`: inicializa um CRNG ChaCha20 com entropia do protocolo RNG UEFI, das instrucoes RDSEED/RDRAND ou do TPM 2.0 via TCG2.
-- `nucleo/segurança/secureboot.rs`: exibe na ultima linha se o Secure Boot estava ativo ou desativado quando o carregador UEFI entregou o controle ao nucleo.
+- `nucleo/segurança/secureboot.rs`: exibe se o Secure Boot estava ativo ou desativado quando o carregador UEFI entregou o controle ao nucleo.
 - `nucleo/memoria/enderecos.rs`: interpreta o mapa UEFI e lista os intervalos de RAM.
 - `nucleo/memoria/paginas.rs`: aloca, reserva e libera paginas fisicas entre as regioes UEFI convencionais, com limite de 64 GiB.
 - `nucleo/memoria/ponteiros.rs`: exibe os enderecos de tabelas UEFI recebidos pelo carregador, incluindo ACPI e SMBIOS.
-- `nucleo/memoria/regioes.rs`: reserva explicitamente a imagem do nucleo, o framebuffer e os dados de boot.
+- `nucleo/memoria/regioes.rs`: reserva explicitamente a primeira pagina fisica (0-4 KiB), a imagem do nucleo, o framebuffer e os dados de boot.
 - `nucleo/memoria/mapa_memoria.rs`: tabela unica das areas de hardware (video, ROM da BIOS, chipset, IOAPIC, HPET, Local APIC e Flash da BIOS); reserva essas faixas no alocador fisico, remove o mapeamento delas e gera as linhas correspondentes na tela.
-- `nucleo/memoria/virtual.rs`: cria um mapeamento identidade de 64 GiB, protege as secoes do nucleo, habilita NX e CR0.WP, marca o framebuffer como nao cacheavel e desmapeia as areas de hardware reservadas.
+- `nucleo/memoria/mtrr.rs`: verifica se a RAM convencional usa write-back e configura write-combining no framebuffer apenas quando há faixa MTRR livre e sem sobreposição.
+- `nucleo/memoria/virtual.rs`: cria um mapeamento identidade de 64 GiB com páginas de 1 GiB quando suportadas (fallback para páginas de 2 MiB), protege as secoes do nucleo, habilita NX e CR0.WP, seleciona PAT WC no framebuffer somente quando MTRR WC está ativo (senão mantém UC) e desmapeia as reservas.
 - `nucleo/memoria/memoria_dinamica.rs`: fornece o alocador global do nucleo baseado em paginas fisicas.
 - `nucleo/memoria/operacao.rs`: confirma pelos dados SMBIOS se todos os slots e canais de memoria estao ocupados.
 - `nucleo/Rust`: executavel ELF independente, produzido a partir de `nucleo/nucleo.rs` e incluido na pasta `NUCLEO` da ISO 9660.
@@ -42,7 +44,7 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI` e `inicio.so` na raiz.
 - `compilar.sh`: compila os estagios UEFI e o nucleo freestanding, e gera a imagem FAT e a ISO.
 - `.vscode/tasks.json`: tarefas para compilar e executar no QEMU.
-- `RustOS_Beta_v0.1_Construcao_0.9.2026.iso`: imagem ISO gerada na raiz do projeto.
+- `RustOS_Beta_v0.1_Construcao_0.10.2026.iso`: imagem ISO gerada na raiz do projeto.
 
 Os estagios sao binarios separados: o firmware inicia `BOOTX64.EFI`, que carrega `inicio.so` de `inicio.img`; `inicio.so` procura e carrega `nucleo/Rust` diretamente dos setores da ISO 9660. O nucleo recebe do carregador os dados do framebuffer e, apos a transferencia, executa sem os servicos de boot UEFI.
 
@@ -59,7 +61,7 @@ O nome `NUCLEO/RUST` pode aparecer como `NUCLEO/RUST.;1` ao listar a ISO, devido
 Na tela, o nucleo mostra as etapas nesta ordem:
 
 ```text
-{   1} RustOS Beta v0.1 Construção 0.9.2026
+{   1} RustOS Beta v0.1 Construção 0.10.2026
 {   2} Caminho: nucleo/Rust
 {   3} Organização de segurança de execução
 {   4} Lista de endereços da memoria RAM
@@ -85,11 +87,23 @@ Na tela, o nucleo mostra as etapas nesta ordem:
 {próximo número} BIOS: <versao da BIOS>
 {próximo número} Barramento de memoria OK: 1/1 slots e 1/1 canais ocupados
 {próximo número} Frequência detectada de 2496 MHz (2.50 GHz)
+{próximo número} 0000000000000000 - 0000000000000FFF (4 KB) Endereço reservado
+{próximo número} 00000000000A0000 - 00000000000FFFFF (384 KB) Endereço reservado
+{próximo número} RAM disponível: X.XX GB
+{próximo número} Memória: RAM WB; framebuffer WC
+{próximo número} PAT: WB, WT, UC-, UC, WC, WP, UC-, UC
+{próximo número} RAM fisica utilizavel: X.XX GB
+{próximo número} Paginas grandes ativas: 1 GiB (PDPE1GB)
+{próximo número} ramdisk não encontrado
 ```
 
 O número da versão EFI e obtido de `SystemTable.Header.Revision`; o exemplo `2.70` pode variar conforme o firmware. Depois dessa linha, o carregador passa ao nucleo os enderecos das tabelas UEFI, identificando ACPI e SMBIOS quando reconhecidos. Todas as linhas recebem numeracao sequencial, uma por uma, inclusive as de continuacao quando a lista de tabelas nao cabe em uma unica linha. O nucleo tambem usa a MADT ACPI para localizar os IOAPICs. O CRNG usa ChaCha20 com uma semente de 256 bits obtida do protocolo RNG do UEFI, de RDSEED/RDRAND ou de TPM 2.0 via protocolo TCG2; sem uma fonte disponivel, a inicializacao falha em vez de usar uma semente previsivel.
 
-Na ultima linha da tela, `nucleo/cpu/tsc.rs` calibra o TSC contra o PIT por cerca de 27 ms, guarda a frequencia em cache para o relogio interno e exibe a velocidade detectada. Se o PIT nao responder, a frequencia e obtida pelas folhas CPUID `0x15` e `0x16`.
+As nove ultimas linhas seguem esta ordem: frequencia do TSC, primeira pagina reservada, faixa combinada de video/BIOS, RAM disponivel, estado MTRR, oito tipos PAT, total de RAM fisica utilizavel, tamanho das paginas grandes ativas e estado do ramdisk. A mensagem de páginas grandes informa 1 GiB quando `PDPE1GB` e suportado; caso contrario, informa o fallback de 2 MiB. Como a imagem do ramdisk ainda nao existe, a ultima linha mostra apenas `ramdisk não encontrado`; o endereço real será exibido quando ele for carregado. A linha de RAM fisica soma os descritores UEFI de memoria convencional limitados ao alcance de 64 GiB do alocador RustOS. `nucleo/cpu/tsc.rs` calibra o TSC contra o PIT por cerca de 27 ms e exibe a velocidade detectada; se o PIT nao responder, a frequencia e obtida pelas folhas CPUID `0x15` e `0x16`.
+
+O modulo MTRR exige suporte a MTRR e PAT, confirma que as regioes UEFI de RAM convencional permanecem write-back e só usa registradores variáveis livres para marcar o framebuffer como write-combining. Se a faixa se sobrepõe a RAM ou a outro MTRR, não há registradores livres ou as condições de segurança não são satisfeitas, as regras do firmware são preservadas e o framebuffer permanece não cacheável.
+
+O modulo PAT escreve as oito entradas na ordem exibida. Se PAT ou MTRR nao forem suportados ou as verificacoes MTRR falharem, o framebuffer continua UC e a linha PAT informa que a tabela do firmware foi preservada quando PAT nao puder ser configurada.
 
 Apos os intervalos, o nucleo exibe “RAM proteção ativo”, inicializa o APIC local e os IOAPICs, mostra a versao EFI, lista os ponteiros das tabelas UEFI e ativa o CRNG. A IDT esta carregada, mas todos os vetores ainda usam um handler fatal; as interrupcoes da CPU permanecem desabilitadas e as entradas do IOAPIC ficam mascaradas. Ainda nao ha tratamento ou roteamento de IRQs.
 
@@ -104,12 +118,17 @@ Depois da mensagem de aleatoriedade, o nucleo lista as areas de hardware reserva
 | Registradores do Local APIC | `0xFEE00000 - 0xFEE00FFF` | 4 KB |
 | Flash da BIOS | `0xFF000000 - 0xFFFFFFFF` | 16 MB |
 | ROM da BIOS | `0x000C0000 - 0x000FFFFF` | 256 KB |
+| Faixa combinada de vídeo e BIOS | `0x000A0000 - 0x000FFFFF` | 384 KB |
 
 Os tamanhos sao calculados a partir da propria faixa (`fim - inicio + 1`), nao digitados. A tabela `REGIOES` em `nucleo/memoria/mapa_memoria.rs` e a unica fonte para reserva fisica, desmapeamento e texto na tela, evitando divergencia entre o que e exibido e o que e feito. O IOAPIC e uma sub-regiao do bloco de controle do chipset, como no mapa real de `/proc/iomem` do Linux.
 
 A reserva e feita em duas camadas: as faixas sao marcadas no bitmap do alocador de paginas fisicas, para nunca serem entregues como RAM comum, e tambem tem o bit `PRESENT` removido das tabelas de pagina, com `invlpg`. Assim, qualquer acesso a elas gera page fault. O LAPIC e o IOAPIC sao desmapeados e depois remapeados por `nucleo/cpu/apic.rs` e `nucleo/cpu/ioapic.rs` como dispositivos nao cacheaveis, pois o nucleo precisa acessa-los. O HPET ainda nao e programado: a regiao apenas e reservada e protegida.
 
-O núcleo inicializa um alocador de páginas físicas usando apenas memória convencional UEFI, reserva as áreas do núcleo/framebuffer/dados de boot e as áreas de hardware, e instala um mapeamento identidade dos primeiros 64 GiB. Código do núcleo fica somente leitura/executável; dados ficam leitura/escrita/não executáveis; o restante do mapeamento fica não executável. NX e proteção de escrita (CR0.WP) são habilitados, e o framebuffer é mapeado como não cacheável. O heap global usa páginas físicas e executa um teste de alocação na inicialização. O alocador gerencia endereços físicos abaixo de 64 GiB. Ainda não há processos de usuário nem separação de espaços de endereçamento por processo. Arquivos permanecem no armazenamento e seus dados são carregados na RAM quando usados. A listagem mostra endereços e tipos UEFI; as linhas rolam a tela quando necessário. Todas as linhas, de qualquer etapa, são desenhadas com uma pausa de 25 ms entre si, para que apareçam uma por uma.
+A primeira pagina fisica (`0x0-0xFFF`) tambem e marcada como indisponivel no bitmap e removida do mapeamento identidade. Assim, ela nao pode ser entregue pelo alocador nem acessada pelo nucleo por meio desse mapeamento.
+
+A linha `RAM disponível` conta as páginas livres no bitmap real do alocador após as reservas do kernel e das regiões de hardware. A linha final soma a memoria fisica convencional descrita pelo UEFI dentro do limite do alocador; ambas convertem bytes para GB decimal (1 GB = 1.000.000.000 bytes) e arredondam para duas casas decimais.
+
+O núcleo inicializa um alocador de páginas físicas usando apenas memória convencional UEFI, reserva as áreas do núcleo/framebuffer/dados de boot e as áreas de hardware, e instala um mapeamento identidade dos primeiros 64 GiB. Código do núcleo fica somente leitura/executável; dados ficam leitura/escrita/não executáveis; o restante do mapeamento fica não executável. NX e proteção de escrita (CR0.WP) são habilitados. O framebuffer recebe WC quando as verificações de PAT/MTRR passam; caso contrário, permanece UC. O heap global usa páginas físicas e executa um teste de alocação na inicialização. O alocador gerencia endereços físicos abaixo de 64 GiB. Ainda não há processos de usuário nem separação de espaços de endereçamento por processo. Arquivos permanecem no armazenamento e seus dados são carregados na RAM quando usados. A listagem mostra endereços e tipos UEFI; as linhas rolam a tela quando necessário. Todas as linhas, de qualquer etapa, são desenhadas com uma pausa de 25 ms entre si, para que apareçam uma por uma.
 
 ## Requisitos
 

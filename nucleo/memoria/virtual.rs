@@ -1,10 +1,11 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.9.2026
-// Funcao: Configura o mapeamento virtual identidade e as protecoes de paginas do nucleo.
+// Construcao: 0.10.2026
+// Funcao: Configura o mapeamento identidade, as protecoes e o tipo de cache do framebuffer.
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::{mapa_memoria, BootInfo};
+use super::{mapa_memoria, mtrr, paginas, pat, BootInfo};
 
 const PAGE_SIZE: u64 = 4096;
 const PAGE_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -24,9 +25,11 @@ const EFER_MSR: u32 = 0xc000_0080;
 const EFER_NXE: u64 = 1 << 11;
 const CR0_WRITE_PROTECT: u64 = 1 << 16;
 const TWO_MIB: u64 = 0x20_0000;
+const ONE_GIB: u64 = 512 * TWO_MIB;
 const MAX_PHYSICAL_ADDRESS: u64 = 64 * 1024 * 1024 * 1024;
-const PAGE_DIRECTORIES: usize = (MAX_PHYSICAL_ADDRESS / (512 * TWO_MIB)) as usize;
+const PAGE_DIRECTORIES: usize = (MAX_PHYSICAL_ADDRESS / ONE_GIB) as usize;
 const MAX_PAGE_TABLES: usize = 256;
+static IDENTITY_PAGE_SIZE: AtomicU64 = AtomicU64::new(TWO_MIB);
 
 #[repr(C, align(4096))]
 struct PageTablePool([[u64; 512]; MAX_PAGE_TABLES]);
@@ -41,6 +44,10 @@ pub(super) enum ErroVirtual {
 	UnmappedPage,
 	ConflictingMapping,
 	PageTablePoolExhausted,
+}
+
+pub(super) fn tamanho_pagina_identidade() -> u64 {
+	IDENTITY_PAGE_SIZE.load(Ordering::Relaxed)
 }
 
 #[derive(Clone, Copy)]
@@ -59,13 +66,17 @@ unsafe extern "C" {
 	static __data_end: u8;
 }
 
-pub(super) fn inicializar(boot_info: &BootInfo) -> Result<(), ErroVirtual> {
+pub(super) fn inicializar(
+	boot_info: &BootInfo,
+) -> Result<(), ErroVirtual> {
 	let extended_leaf = core::arch::x86_64::__cpuid(0x8000_0000).eax;
 	if extended_leaf < 0x8000_0001
 		|| core::arch::x86_64::__cpuid(0x8000_0001).edx & (1 << 20) == 0
 	{
 		return Err(ErroVirtual::UnsupportedCpu);
 	}
+	let one_gib_pages_supported = extended_leaf >= 0x8000_0001
+		&& core::arch::x86_64::__cpuid(0x8000_0001).edx & (1 << 26) != 0;
 
 	let cr4: u64;
 	let cr0: u64;
@@ -100,7 +111,11 @@ pub(super) fn inicializar(boot_info: &BootInfo) -> Result<(), ErroVirtual> {
 		);
 	}
 
-	let root = construir_mapa_identidade(five_level_paging)?;
+	let root = construir_mapa_identidade(five_level_paging, one_gib_pages_supported)?;
+	IDENTITY_PAGE_SIZE.store(
+		if one_gib_pages_supported { ONE_GIB } else { TWO_MIB },
+		Ordering::Relaxed,
+	);
 	unsafe {
 		core::arch::asm!(
 			"mov cr3, {}",
@@ -145,8 +160,15 @@ pub(super) fn inicializar(boot_info: &BootInfo) -> Result<(), ErroVirtual> {
 	for (start, end, permissions) in ranges {
 		proteger_intervalo(start, end, permissions)?;
 	}
-	configurar_cache_nao_cacheavel(boot_info.frame_buffer as u64, frame_buffer_size)?;
+	let pat_configured = pat::configurar();
+	let framebuffer_write_combining = mtrr::configurar(boot_info, pat_configured);
+	if framebuffer_write_combining {
+		configurar_cache_write_combining(boot_info.frame_buffer as u64, frame_buffer_size)?;
+	} else {
+		configurar_cache_nao_cacheavel(boot_info.frame_buffer as u64, frame_buffer_size)?;
+	}
 	mapa_memoria::desmapear()?;
+	desmapear_intervalo(0, paginas::PAGE_SIZE)?;
 	unsafe {
 		core::arch::asm!(
 			"mov cr3, {}",
@@ -252,7 +274,10 @@ fn validar_intervalo(start: u64, size: usize) -> Result<(), ErroVirtual> {
 	Ok(())
 }
 
-fn construir_mapa_identidade(five_level_paging: bool) -> Result<*mut u64, ErroVirtual> {
+fn construir_mapa_identidade(
+	five_level_paging: bool,
+	one_gib_pages: bool,
+) -> Result<*mut u64, ErroVirtual> {
 	unsafe {
 		NEXT_PAGE_TABLE = 0;
 	}
@@ -272,6 +297,18 @@ fn construir_mapa_identidade(five_level_paging: bool) -> Result<*mut u64, ErroVi
 	}
 
 	for pdpt_index in 0..PAGE_DIRECTORIES {
+		if one_gib_pages {
+			let page_address = (pdpt_index as u64)
+				.checked_mul(ONE_GIB)
+				.ok_or(ErroVirtual::InvalidRange)?;
+			unsafe {
+				ptr::write_volatile(
+					pdpt.add(pdpt_index),
+					page_address | PRESENT | WRITABLE | LARGE_PAGE | NO_EXECUTE,
+				);
+			}
+			continue;
+		}
 		let directory = novo_page_table()?;
 		unsafe {
 			ptr::write_volatile(
@@ -333,6 +370,32 @@ fn configurar_cache_nao_cacheavel(start: u64, size: usize) -> Result<(), ErroVir
 	Ok(())
 }
 
+fn configurar_cache_write_combining(start: u64, size: usize) -> Result<(), ErroVirtual> {
+	let end = start
+		.checked_add(size as u64)
+		.ok_or(ErroVirtual::InvalidRange)?;
+	let mut address = start & !(PAGE_SIZE - 1);
+	let end_page = end
+		.checked_add(PAGE_SIZE - 1)
+		.ok_or(ErroVirtual::InvalidRange)?
+		& !(PAGE_SIZE - 1);
+	while address < end_page {
+		let pte = obter_pte(address, false)?;
+		let entry = unsafe { ptr::read_volatile(pte) };
+		if entry & PRESENT == 0 || entry & PAGE_MASK != address {
+			return Err(ErroVirtual::UnmappedPage);
+		}
+		unsafe {
+			ptr::write_volatile(pte, (entry & !(WRITE_THROUGH | CACHE_DISABLE)) | (1 << 7));
+			core::arch::asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags));
+		}
+		address = address
+			.checked_add(PAGE_SIZE)
+			.ok_or(ErroVirtual::InvalidRange)?;
+	}
+	Ok(())
+}
+
 /// Remove o mapeamento das paginas da area indicada, tornando-as inacessiveis.
 pub(super) fn desmapear_intervalo(start: u64, end: u64) -> Result<(), ErroVirtual> {
 	if start >= end || start % PAGE_SIZE != 0 || end % PAGE_SIZE != 0 {
@@ -376,7 +439,7 @@ fn obter_pte_direto(
 	let pdpt = descend(pml4e, false)?;
 	let pdpte = unsafe { pdpt.add(((address >> 30) & 0x1ff) as usize) };
 	if unsafe { ptr::read_volatile(pdpte) } & LARGE_PAGE != 0 {
-		return Err(ErroVirtual::InvalidRange);
+		split_1g(pdpte)?;
 	}
 	let directory = descend(pdpte, false)?;
 	let pde = unsafe { directory.add(((address >> 21) & 0x1ff) as usize) };

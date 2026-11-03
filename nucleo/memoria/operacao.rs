@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.9.2026
+// Construcao: 0.10.2026
 // Funcao: Confirma o estado dos slots e canais de memoria informados pelo SMBIOS.
 use core::fmt::{self, Write};
 

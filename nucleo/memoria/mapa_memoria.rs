@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.9.2026
+// Construcao: 0.10.2026
 // Funcao: Reserva as areas de hardware que nao podem ser usadas como RAM comum.
 use core::fmt::{self, Write};
 
@@ -9,6 +9,7 @@ use super::{draw_scrolling_text, paginas, virtual_memory, BootInfo};
 
 const KIB: u64 = 1024;
 const MIB: u64 = 1024 * KIB;
+const BIOS_ROM_END: u64 = 0x0010_0000;
 
 /// Inicio da area de memoria de video VGA (abaixo de 1 MiB).
 pub(super) const VIDEO_START: u64 = 0x000a_0000;
@@ -51,7 +52,7 @@ const REGIOES: &[Regiao] = &[
 	},
 	Regiao {
 		inicio: 0x000c_0000,
-		fim: 0x000f_ffff,
+		fim: BIOS_ROM_END - 1,
 		rotulo: "Proteção da ROM da BIOS",
 	},
 ];
@@ -113,6 +114,26 @@ pub(super) fn exibir(
 		line_number = line_number.checked_add(1).ok_or(fmt::Error)?;
 	}
 	Ok(line_number)
+}
+
+pub(super) fn exibir_reserva_video_bios(
+	boot_info: &BootInfo,
+	y: &mut usize,
+	line_number: usize,
+) -> Result<usize, fmt::Error> {
+	let mut line = LinhaBuffer::novo();
+	line.limpar();
+	write!(
+		&mut line,
+		"{{{:>width$}}} {:016X} - {:016X} ({} KB) Endereço reservado",
+		line_number,
+		VIDEO_START,
+		BIOS_ROM_END - 1,
+		(BIOS_ROM_END - VIDEO_START) / KIB,
+		width = LINE_NUMBER_WIDTH
+	)?;
+	draw_scrolling_text(boot_info, y, line.como_str()?);
+	line_number.checked_add(1).ok_or(fmt::Error)
 }
 
 fn escrever_regiao(

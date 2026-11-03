@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.9.2026
+// Construcao: 0.10.2026
 // Funcao: Reserva as regioes ocupadas pelo nucleo, framebuffer e dados de boot.
 use core::ptr;
 
@@ -12,6 +12,7 @@ unsafe extern "C" {
 }
 
 pub(super) fn reservar(boot_info: &BootInfo) -> Result<(), paginas::ErroPaginas> {
+	paginas::reservar(0, paginas::PAGE_SIZE)?;
 	mapa_memoria::reservar()?;
 
 	let kernel_start = ptr::addr_of!(__kernel_start) as u64;

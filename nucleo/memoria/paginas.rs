@@ -1,10 +1,10 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.9.2026
+// Construcao: 0.10.2026
 // Funcao: Aloca, reserva e libera paginas fisicas usando o mapa UEFI.
 use core::ptr;
 
-const PAGE_SIZE: u64 = 4096;
+pub(super) const PAGE_SIZE: u64 = 4096;
 const MAX_PHYSICAL_ADDRESS: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_PAGES: usize = (MAX_PHYSICAL_ADDRESS / PAGE_SIZE) as usize;
 const BITMAP_WORDS: usize = MAX_PAGES / u64::BITS as usize;
@@ -128,6 +128,55 @@ pub(super) fn reservar(address: u64, size: u64) -> Result<(), ErroPaginas> {
 		return Err(ErroPaginas::PaginaInvalida);
 	}
 	reservar_intervalo(address, size)
+}
+
+pub(super) fn memoria_disponivel_bytes() -> u64 {
+	if !inicializado() {
+		return 0;
+	}
+	let mut available_pages = 0u64;
+	for word_index in 0..BITMAP_WORDS {
+		let bitmap_word = unsafe {
+			ptr::addr_of!(BITMAP)
+				.cast::<u64>()
+				.add(word_index)
+				.read()
+		};
+		available_pages += u64::from(bitmap_word.count_ones());
+	}
+	available_pages * PAGE_SIZE
+}
+
+pub(super) fn memoria_fisica_utilizavel_bytes(
+	memory_map: *const u8,
+	memory_map_size: usize,
+	descriptor_size: usize,
+) -> Option<u64> {
+	if memory_map.is_null()
+		|| descriptor_size < MEMORY_DESCRIPTOR_MIN_SIZE
+		|| memory_map_size == 0
+		|| memory_map_size % descriptor_size != 0
+	{
+		return None;
+	}
+	let descriptor_count = memory_map_size / descriptor_size;
+	let mut total_bytes = 0u64;
+	for index in 0..descriptor_count {
+		let offset = index.checked_mul(descriptor_size)?;
+		let descriptor = unsafe { memory_map.add(offset) };
+		let memory_type = unsafe { ptr::read_unaligned(descriptor.cast::<u32>()) };
+		if memory_type != EFI_CONVENTIONAL_MEMORY {
+			continue;
+		}
+		let start = unsafe { ptr::read_unaligned(descriptor.add(8).cast::<u64>()) };
+		let page_count = unsafe { ptr::read_unaligned(descriptor.add(24).cast::<u64>()) };
+		let size = page_count.checked_mul(PAGE_SIZE)?;
+		let end = start.checked_add(size)?;
+		if start < MAX_PHYSICAL_ADDRESS {
+			total_bytes = total_bytes.checked_add(end.min(MAX_PHYSICAL_ADDRESS) - start)?;
+		}
+	}
+	Some(total_bytes)
 }
 
 fn reservar_intervalo(start: u64, size: u64) -> Result<(), ErroPaginas> {

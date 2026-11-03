@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.9.2026
+// Construcao: 0.10.2026
 // Funcao: Exibe a versao do UEFI informada pela tabela de sistema do firmware.
 use core::fmt::{self, Write};
 
