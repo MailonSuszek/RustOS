@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.10.2026
+// Construcao: 0.11.2026
 // Funcao: Coordena as etapas de inicializacao e exibicao do nucleo em ordem.
 use core::fmt::Write;
 
@@ -34,6 +34,10 @@ enum Etapa {
 	RamFisicaUtilizavel,
 	PaginasGrandes,
 	Ramdisk,
+	TabelasAcpi,
+	Bloco,
+	Zonas,
+	ZonaMovel,
 }
 
 struct Orquestrador {
@@ -75,7 +79,11 @@ impl Orquestrador {
 			Etapa::Pat => Some(Etapa::RamFisicaUtilizavel),
 			Etapa::RamFisicaUtilizavel => Some(Etapa::PaginasGrandes),
 			Etapa::PaginasGrandes => Some(Etapa::Ramdisk),
-			Etapa::Ramdisk => None,
+			Etapa::Ramdisk => Some(Etapa::TabelasAcpi),
+			Etapa::TabelasAcpi => Some(Etapa::Bloco),
+			Etapa::Bloco => Some(Etapa::Zonas),
+			Etapa::Zonas => Some(Etapa::ZonaMovel),
+			Etapa::ZonaMovel => None,
 		};
 		if self.proxima != Some(etapa) {
 			return Err(ErroOrdem::EtapaForaDeOrdem);
@@ -111,13 +119,19 @@ pub(super) enum ErroOrdem {
 	LinhaRamFisicaUtilizavel,
 	LinhaPaginasGrandes,
 	LinhaRamdisk,
+	LinhaTabelasAcpi,
+	Bloco(super::bloco::ErroBloco),
+	LinhaBloco,
+	LinhaZonas,
+	ZonaMovel(super::zona_movel::ErroZonaMovel),
+	LinhaZonaMovel,
 }
 
 pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 	let mut orquestrador = Orquestrador::novo();
 
 	orquestrador.executar(Etapa::Identificacao, || {
-		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.10.2026");
+		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.11.2026");
 		super::aguardar_linha();
 		Ok(())
 	})?;
@@ -338,6 +352,28 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 			line.como_str().map_err(|_| ErroOrdem::LinhaRamdisk)?,
 		);
 		line_number = line_number.checked_add(1).ok_or(ErroOrdem::LinhaRamdisk)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::TabelasAcpi, || {
+		line_number = super::info::acpi::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaTabelasAcpi)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::Bloco, || {
+		super::bloco::inicializar(boot_info).map_err(ErroOrdem::Bloco)?;
+		line_number = super::bloco::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaBloco)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::Zonas, || {
+		line_number = super::zonas::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaZonas)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::ZonaMovel, || {
+		super::zona_movel::inicializar(boot_info).map_err(ErroOrdem::ZonaMovel)?;
+		line_number = super::zona_movel::exibir(boot_info, &mut y, line_number)
+			.map_err(|_| ErroOrdem::LinhaZonaMovel)?;
 		Ok(())
 	})?;
 

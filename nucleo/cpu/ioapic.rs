@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.10.2026
+// Construcao: 0.11.2026
 // Funcao: Localiza e configura os controladores IOAPIC via ACPI.
 use core::ptr;
 

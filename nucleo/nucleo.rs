@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.10.2026
+// Construcao: 0.11.2026
 // Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
@@ -32,6 +32,12 @@ mod tsc;
 mod pat;
 #[path = "memoria/enderecos.rs"]
 mod enderecos;
+#[path = "memoria/bloco.rs"]
+mod bloco;
+#[path = "memoria/zonas.rs"]
+mod zonas;
+#[path = "memoria/zona_movel.rs"]
+mod zona_movel;
 #[path = "memoria/mapa_memoria.rs"]
 mod mapa_memoria;
 #[path = "memoria/mtrr.rs"]
@@ -138,6 +144,9 @@ pub extern "C" fn kernel_main(boot_info: *mut BootInfo) -> ! {
 		let message = match error {
 			quando::ErroOrdem::Apic(_) => "Erro APCI",
 			quando::ErroOrdem::IoApic(_) => "Erro IOAPIC",
+			quando::ErroOrdem::Bloco(_) => "Erro bloco memoria",
+			quando::ErroOrdem::LinhaZonas => "Erro zonas memoria",
+			quando::ErroOrdem::ZonaMovel(_) => "Erro zona movel",
 			_ => "Erro inicializacao",
 		};
 		draw_text(boot_info, 8, 48, message);

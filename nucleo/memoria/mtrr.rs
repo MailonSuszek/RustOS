@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.10.2026
+// Construcao: 0.11.2026
 // Funcao: Valida MTRRs de RAM e configura write-combining no framebuffer quando seguro.
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};

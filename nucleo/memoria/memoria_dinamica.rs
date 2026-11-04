@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.10.2026
+// Construcao: 0.11.2026
 // Funcao: Implementa o heap global do nucleo sobre paginas fisicas.
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;

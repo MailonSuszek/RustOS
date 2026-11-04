@@ -1,7 +1,7 @@
 /*
  * Nome: RustOS Beta
  * Versao: v0.1
- * Construcao: 0.10.2026
+ * Construcao: 0.11.2026
  * Funcao: Define o layout de memoria e os segmentos do executavel ELF do nucleo.
  */
 OUTPUT_FORMAT(elf64-x86-64)

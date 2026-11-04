@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.10.2026
+// Construcao: 0.11.2026
 // Funcao: Configura o mapeamento identidade, as protecoes e o tipo de cache do framebuffer.
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -221,6 +221,73 @@ pub(super) fn mapear_dispositivo(start: u64, size: usize) -> Result<(), ErroVirt
 	validar_intervalo(start, size)?;
 	mapear_identidade(start, size)?;
 	configurar_cache_nao_cacheavel(start, size)
+}
+
+/// Mapeia um bloco contiguo de memoria fisica em uma faixa virtual dedicada
+/// com paginas grandes de 2 MiB, sem alterar o mapa identidade existente.
+pub(super) fn mapear_bloco(
+	virtual_base: u64,
+	physical_base: u64,
+	size: u64,
+) -> Result<(), ErroVirtual> {
+	if size == 0
+		|| size % TWO_MIB != 0
+		|| virtual_base % TWO_MIB != 0
+		|| physical_base % TWO_MIB != 0
+		|| physical_base
+			.checked_add(size)
+			.map_or(true, |end| end > MAX_PHYSICAL_ADDRESS)
+	{
+		return Err(ErroVirtual::InvalidRange);
+	}
+	validar_intervalo(virtual_base, size as usize)?;
+
+	let cr3: u64;
+	unsafe {
+		core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+	}
+	let root = (cr3 & PAGE_MASK) as *mut u64;
+	let cr4: u64;
+	unsafe {
+		core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+	}
+	let root = if cr4 & CR4_LA57 != 0 {
+		descend(unsafe { root.add(((virtual_base >> 48) & 0x1ff) as usize) }, true)?
+	} else {
+		root
+	};
+
+	let mut offset = 0u64;
+	while offset < size {
+		let virtual_address = virtual_base + offset;
+		let physical_address = physical_base + offset;
+		let pml4e = unsafe { root.add(((virtual_address >> 39) & 0x1ff) as usize) };
+		let pdpt = descend(pml4e, true)?;
+		let pdpte = unsafe { pdpt.add(((virtual_address >> 30) & 0x1ff) as usize) };
+		let pdpte_entry = unsafe { ptr::read_volatile(pdpte) };
+		if pdpte_entry & PRESENT != 0 && pdpte_entry & LARGE_PAGE != 0 {
+			return Err(ErroVirtual::ConflictingMapping);
+		}
+		let directory = descend(pdpte, true)?;
+		let pde = unsafe { directory.add(((virtual_address >> 21) & 0x1ff) as usize) };
+		let entry = unsafe { ptr::read_volatile(pde) };
+		if entry & PRESENT != 0 && entry & PAGE_MASK != physical_address {
+			return Err(ErroVirtual::ConflictingMapping);
+		}
+		unsafe {
+			ptr::write_volatile(
+				pde,
+				physical_address | PRESENT | WRITABLE | LARGE_PAGE | NO_EXECUTE,
+			);
+			core::arch::asm!(
+				"invlpg [{}]",
+				in(reg) virtual_address,
+				options(nostack, preserves_flags)
+			);
+		}
+		offset += TWO_MIB;
+	}
+	Ok(())
 }
 
 fn proteger_intervalo(

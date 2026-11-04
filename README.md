@@ -4,7 +4,7 @@
 **Funcao:** Documenta a estrutura, os requisitos, a compilacao e a execucao do RustOS.<br>
 **Nome:** RustOS Beta  
 **Versao:** v0.1  
-**Construcao:** 0.10.2026<br>
+**Construcao:** 0.11.2026<br>
 **Arquitetura:** x86-64  
 **Boot:** UEFI
 
@@ -34,17 +34,21 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `nucleo/memoria/mapa_memoria.rs`: tabela unica das areas de hardware (video, ROM da BIOS, chipset, IOAPIC, HPET, Local APIC e Flash da BIOS); reserva essas faixas no alocador fisico, remove o mapeamento delas e gera as linhas correspondentes na tela.
 - `nucleo/memoria/mtrr.rs`: verifica se a RAM convencional usa write-back e configura write-combining no framebuffer apenas quando há faixa MTRR livre e sem sobreposição.
 - `nucleo/memoria/virtual.rs`: cria um mapeamento identidade de 64 GiB com páginas de 1 GiB quando suportadas (fallback para páginas de 2 MiB), protege as secoes do nucleo, habilita NX e CR0.WP, seleciona PAT WC no framebuffer somente quando MTRR WC está ativo (senão mantém UC) e desmapeia as reservas.
+- `nucleo/memoria/bloco.rs`: cria um bloco virtual unico em 1 TiB que espelha toda a RAM fisica com paginas grandes de 2 MiB, reserva uma pagina fisica para a estrutura de controle do bloco e exibe as duas linhas com a faixa virtual criada e o endereço da configuracao.
+- `nucleo/memoria/zonas.rs`: divide a RAM em zonas de hardware no padrao DMA (0-16 MiB), DMA32 (16 MiB-4 GiB) e Normal (acima de 4 GiB) e escreve uma linha para cada zona, informando faixa e tamanho ou indicando que a zona fica vazia na maquina.
+- `nucleo/memoria/zona_movel.rs`: reserva a metade superior da RAM como zona movel para dados que podem ser realocados facilmente, mantendo a area contigua contra fragmentacao, e escreve a linha de inicio da zona movel.
 - `nucleo/memoria/memoria_dinamica.rs`: fornece o alocador global do nucleo baseado em paginas fisicas.
 - `nucleo/memoria/operacao.rs`: confirma pelos dados SMBIOS se todos os slots e canais de memoria estao ocupados.
 - `nucleo/Rust`: executavel ELF independente, produzido a partir de `nucleo/nucleo.rs` e incluido na pasta `NUCLEO` da ISO 9660.
 - `nucleo/info/uefi.rs`: exibe a versao do UEFI obtida de `SystemTable.Header.Revision` no carregador.
 - `nucleo/info/smbios.rs`: exibe a versao do SMBIOS capturada pelo carregador a partir da entrada `_SM3_` ou `_SM_` da tabela de configuracao UEFI.
 - `nucleo/info/dmi.rs`: exibe fabricante, modelo e BIOS do computador obtidos das estruturas DMI/SMBIOS capturadas pelo carregador.
+- `nucleo/info/acpi.rs`: caminha o RSDP recebido do UEFI, valida a XSDT (ou RSDT) e lista cada tabela ACPI valida em uma linha, com assinatura, endereço, tamanho e fabricante.
 - `nucleo/linker.ld`: posiciona o nucleo ELF na memoria fisica a partir de 1 MiB.
 - `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI` e `inicio.so` na raiz.
 - `compilar.sh`: compila os estagios UEFI e o nucleo freestanding, e gera a imagem FAT e a ISO.
 - `.vscode/tasks.json`: tarefas para compilar e executar no QEMU.
-- `RustOS_Beta_v0.1_Construcao_0.10.2026.iso`: imagem ISO gerada na raiz do projeto.
+- `RustOS_Beta_v0.1_Construcao_0.11.2026.iso`: imagem ISO gerada na raiz do projeto.
 
 Os estagios sao binarios separados: o firmware inicia `BOOTX64.EFI`, que carrega `inicio.so` de `inicio.img`; `inicio.so` procura e carrega `nucleo/Rust` diretamente dos setores da ISO 9660. O nucleo recebe do carregador os dados do framebuffer e, apos a transferencia, executa sem os servicos de boot UEFI.
 
@@ -61,7 +65,7 @@ O nome `NUCLEO/RUST` pode aparecer como `NUCLEO/RUST.;1` ao listar a ISO, devido
 Na tela, o nucleo mostra as etapas nesta ordem:
 
 ```text
-{   1} RustOS Beta v0.1 Construção 0.10.2026
+{   1} RustOS Beta v0.1 Construção 0.11.2026
 {   2} Caminho: nucleo/Rust
 {   3} Organização de segurança de execução
 {   4} Lista de endereços da memoria RAM
@@ -95,11 +99,27 @@ Na tela, o nucleo mostra as etapas nesta ordem:
 {próximo número} RAM fisica utilizavel: X.XX GB
 {próximo número} Paginas grandes ativas: 1 GiB (PDPE1GB)
 {próximo número} ramdisk não encontrado
+{próximo número} Tabelas ACPI disponibilizadas pela UEFI: N
+{próximo número} Tabela ACPI: FACP, endereço 0x00000000000E0000, 268 bytes, fabricante BOCHS
+{próximo número} Bloco virtual de RAM criado: 0x0000001000000000 - 0x0000001010000000
+{próximo número} Controle do bloco reservado: 0x0000000000012A000
+{próximo número} Zona DMA: 0x0000000000000000 - 0x0000000000FFFFFF (16 MB)
+{próximo número} Zona DMA32: 0x0000000001000000 - 0x000000000FFFFFFF (240 MB)
+{próximo número} Zona Normal: vazia
+{próximo número} Início da zona móvel para a memoria RAM
 ```
 
 O número da versão EFI e obtido de `SystemTable.Header.Revision`; o exemplo `2.70` pode variar conforme o firmware. Depois dessa linha, o carregador passa ao nucleo os enderecos das tabelas UEFI, identificando ACPI e SMBIOS quando reconhecidos. Todas as linhas recebem numeracao sequencial, uma por uma, inclusive as de continuacao quando a lista de tabelas nao cabe em uma unica linha. O nucleo tambem usa a MADT ACPI para localizar os IOAPICs. O CRNG usa ChaCha20 com uma semente de 256 bits obtida do protocolo RNG do UEFI, de RDSEED/RDRAND ou de TPM 2.0 via protocolo TCG2; sem uma fonte disponivel, a inicializacao falha em vez de usar uma semente previsivel.
 
-As nove ultimas linhas seguem esta ordem: frequencia do TSC, primeira pagina reservada, faixa combinada de video/BIOS, RAM disponivel, estado MTRR, oito tipos PAT, total de RAM fisica utilizavel, tamanho das paginas grandes ativas e estado do ramdisk. A mensagem de páginas grandes informa 1 GiB quando `PDPE1GB` e suportado; caso contrario, informa o fallback de 2 MiB. Como a imagem do ramdisk ainda nao existe, a ultima linha mostra apenas `ramdisk não encontrado`; o endereço real será exibido quando ele for carregado. A linha de RAM fisica soma os descritores UEFI de memoria convencional limitados ao alcance de 64 GiB do alocador RustOS. `nucleo/cpu/tsc.rs` calibra o TSC contra o PIT por cerca de 27 ms e exibe a velocidade detectada; se o PIT nao responder, a frequencia e obtida pelas folhas CPUID `0x15` e `0x16`.
+As ultimas linhas seguem esta ordem: frequencia do TSC, primeira pagina reservada, faixa combinada de video/BIOS, RAM disponivel, estado MTRR, oito tipos PAT, total de RAM fisica utilizavel, tamanho das paginas grandes ativas, estado do ramdisk, a listagem das tabelas ACPI, o bloco virtual de RAM, as zonas de RAM e a zona movel. A mensagem de páginas grandes informa 1 GiB quando `PDPE1GB` e suportado; caso contrario, informa o fallback de 2 MiB. Como a imagem do ramdisk ainda nao existe, a linha do ramdisk mostra apenas `ramdisk não encontrado`; o endereço real será exibido quando ele for carregado. A linha de RAM fisica soma os descritores UEFI de memoria convencional limitados ao alcance de 64 GiB do alocador RustOS. `nucleo/cpu/tsc.rs` calibra o TSC contra o PIT por cerca de 27 ms e exibe a velocidade detectada; se o PIT nao responder, a frequencia e obtida pelas folhas CPUID `0x15` e `0x16`.
+
+Por fim, o nucleo identifica as tabelas ACPI disponibilizadas pela UEFI pelo RSDP entregue pelo carregador: valida a assinatura e o checksum do RSDT/XSDT, preferindo a XSDT de 64 bits, e percorre cada entrada. Cada tabela com cabecalho e checksum validos aparece em uma propria linha no fim da tela, com assinatura, endereço fisico, tamanho e fabricante, na ordem do firmware; tabelas invalidas sao ignoradas. Quando nao ha RSDP a linha informa `Tabelas ACPI: RSDP ausente`, e quando nenhuma tabela e valida a linha informa `Tabelas ACPI: nenhuma encontrada`.
+
+Depois da listagem ACPI, o nucleo cria um bloco virtual unico para gerenciar toda a RAM do computador: calcula o fim da RAM pelo mapa UEFI ignorando as regioes reservadas e de dispositivo mapeado, limita o resultado a 64 GiB e arredonda para cima em 2 MiB, e entao mapeia a faixa fisica `0` ate esse fim em um endereco virtual dedicado de 1 TiB (`0x0000001000000000`) com paginas grandes de 2 MiB, sem alterar o mapa identidade. Em seguida o nucleo reserva uma pagina fisica via alocador onde grava a estrutura de controle do bloco (base virtual, base fisica, tamanho e numero de paginas), que e o endereco de configuracao mostrado na segunda linha. As duas ultimas linhas da tela informam a faixa virtual criada e o endereço da estrutura de controle; se a RAM nao for encontrada, o mapeamento falhar ou a pagina de controle nao puder ser alocada, a inicializacao falha com a mensagem `Erro bloco memoria`.
+
+Por fim, a RAM e dividida em zonas de hardware no padrao DMA/DMA32/Normal: a Zona DMA cobre de 0 ate 16 MiB para dispositivos com enderecamento limitado, a Zona DMA32 cobre de 16 MiB ate 4 GiB para dispositivos de 32 bits e a Zona Normal cobre o que restar acima de 4 GiB para dispositivos de 64 bits. Cada zona recebe uma propria linha no fim da tela com a faixa fisica e o tamanho em MB, limitadas ao fim da RAM calculado para a maquina; as zonas que nao possuem espaco na RAM aparecem com a palavra `vazia`, de modo que as tres linhas sao sempre escritas.
+
+Apos as zonas, o nucleo prepara a zona movel: a metade superior da RAM, do meio ate o fim calculado, e reservada no alocador de paginas para conter dados moveis, que podem ser realocados de lugar com facilidade. Manter essa area contigua e livre de alocacoes comuns evita a fragmentacao da memoria e abre caminho para funcoes avancadas, como a hibernacao do sistema no futuro. As paginas da faixa sao marcadas como indisponiveis para a RAM comum, sem erro quando ja estiverem ocupadas por kernel ou ACPI, e a ultima linha da tela informa `Início da zona móvel para a memoria RAM`.
 
 O modulo MTRR exige suporte a MTRR e PAT, confirma que as regioes UEFI de RAM convencional permanecem write-back e só usa registradores variáveis livres para marcar o framebuffer como write-combining. Se a faixa se sobrepõe a RAM ou a outro MTRR, não há registradores livres ou as condições de segurança não são satisfeitas, as regras do firmware são preservadas e o framebuffer permanece não cacheável.
 

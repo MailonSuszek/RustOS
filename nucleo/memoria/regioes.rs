@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.10.2026
+// Construcao: 0.11.2026
 // Funcao: Reserva as regioes ocupadas pelo nucleo, framebuffer e dados de boot.
 use core::ptr;
 
