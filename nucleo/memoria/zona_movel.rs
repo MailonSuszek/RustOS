@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Reserva a metade superior da RAM como zona movel para dados realocaveis.
 use core::fmt::{self, Write};
 

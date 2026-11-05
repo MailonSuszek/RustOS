@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Prepara a IDT mantendo as interrupcoes do processador desabilitadas.
 pub(super) fn inicializar() {
 	unsafe {

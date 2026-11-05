@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Reserva as areas de hardware que nao podem ser usadas como RAM comum.
 use core::fmt::{self, Write};
 
@@ -16,6 +16,57 @@ pub(super) const VIDEO_START: u64 = 0x000a_0000;
 /// Fim da area de video; acima dela comeca a ROM da BIOS.
 pub(super) const VIDEO_END: u64 = 0x000c_0000;
 const VIDEO_SIZE: u64 = VIDEO_END - VIDEO_START;
+
+struct FaixaInacessivel {
+	inicio: u64,
+	fim: u64,
+	motivo: &'static str,
+}
+
+const FAIXAS_INACESSIVEIS: &[FaixaInacessivel] = &[
+	FaixaInacessivel {
+		inicio: 0,
+		fim: paginas::PAGE_SIZE,
+		motivo: "pagina zero",
+	},
+	FaixaInacessivel {
+		inicio: VIDEO_START,
+		fim: BIOS_ROM_END,
+		motivo: "video e ROM da BIOS",
+	},
+	FaixaInacessivel {
+		inicio: 0xfec0_0000,
+		fim: 0xfec1_1000,
+		motivo: "controle do chipset e IOAPIC",
+	},
+	FaixaInacessivel {
+		inicio: 0xfed0_0000,
+		fim: 0xfed0_1000,
+		motivo: "temporizador HPET",
+	},
+	FaixaInacessivel {
+		inicio: 0xfee0_0000,
+		fim: 0xfee0_1000,
+		motivo: "controlador Local APIC",
+	},
+	FaixaInacessivel {
+		inicio: 0xff00_0000,
+		fim: 0x1_0000_0000,
+		motivo: "Flash da BIOS",
+	},
+];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ErroExibicaoInacessiveis {
+	Linha,
+	Mapa(virtual_memory::ErroVirtual),
+}
+
+impl From<fmt::Error> for ErroExibicaoInacessiveis {
+	fn from(_: fmt::Error) -> Self {
+		Self::Linha
+	}
+}
 
 /// Intervalo de memoria reservado para um dispositivo ou area de hardware.
 struct Regiao {
@@ -72,11 +123,68 @@ pub(super) fn reservar() -> Result<(), paginas::ErroPaginas> {
 
 /// Remove o mapeamento das areas reservadas, tornando-as inacessiveis.
 pub(super) fn desmapear() -> Result<(), virtual_memory::ErroVirtual> {
-	virtual_memory::desmapear_intervalo(VIDEO_START, VIDEO_END)?;
-	for regiao in REGIOES {
-		virtual_memory::desmapear_intervalo(regiao.inicio, regiao.fim + 1)?;
+	for faixa in FAIXAS_INACESSIVEIS {
+		virtual_memory::desmapear_intervalo(faixa.inicio, faixa.fim)?;
 	}
 	Ok(())
+}
+
+pub(super) fn exibir_paginas_inacessiveis(
+	boot_info: &BootInfo,
+	y: &mut usize,
+	mut line_number: usize,
+) -> Result<usize, ErroExibicaoInacessiveis> {
+	let mut line = LinhaBuffer::novo();
+	write!(
+		&mut line,
+		"{{{:>width$}}} Paginas sem acesso pelo mapa identidade",
+		line_number,
+		width = LINE_NUMBER_WIDTH
+	)?;
+	draw_scrolling_text(boot_info, y, line.como_str()?);
+	line_number = line_number.checked_add(1).ok_or(ErroExibicaoInacessiveis::Linha)?;
+
+	for faixa in FAIXAS_INACESSIVEIS {
+		let mut page_count = 0u64;
+		let mut address = faixa.inicio;
+		while address < faixa.fim {
+			if !virtual_memory::pagina_mapeada(address)
+				.map_err(ErroExibicaoInacessiveis::Mapa)?
+			{
+				page_count = page_count
+					.checked_add(1)
+					.ok_or(ErroExibicaoInacessiveis::Linha)?;
+			}
+			address = address
+				.checked_add(paginas::PAGE_SIZE)
+				.ok_or(ErroExibicaoInacessiveis::Linha)?;
+		}
+		if page_count == 0 {
+			continue;
+		}
+		let page_label = if page_count == 1 {
+			"pagina"
+		} else {
+			"paginas"
+		};
+		line.limpar();
+		write!(
+			&mut line,
+			"{{{:>width$}}} {} {} ({} KB) sem acesso: {}",
+			line_number,
+			page_count,
+			page_label,
+			page_count * (paginas::PAGE_SIZE / 1024),
+			faixa.motivo,
+			width = LINE_NUMBER_WIDTH
+		)?;
+		draw_scrolling_text(boot_info, y, line.como_str()?);
+		line_number = line_number
+			.checked_add(1)
+			.ok_or(ErroExibicaoInacessiveis::Linha)?;
+	}
+
+	Ok(line_number)
 }
 
 pub(super) fn exibir(

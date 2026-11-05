@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Exibe se o Secure Boot estava ativo quando o carregador UEFI entregou o controle.
 use core::fmt::Write;
 

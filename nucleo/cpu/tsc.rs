@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Calibra o relogio interno do nucleo pelo TSC e exibe a frequencia detectada da CPU.
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -38,6 +38,23 @@ pub(super) fn frequencia_hz() -> Option<u64> {
 		}
 		hz => Some(hz),
 	}
+}
+
+pub(super) fn esperar_microsegundos(microsegundos: u64) -> bool {
+	let Some(frequencia) = frequencia_hz() else {
+		return false;
+	};
+	let Some(ciclos) = frequencia
+		.checked_mul(microsegundos)
+		.map(|valor| valor / 1_000_000)
+	else {
+		return false;
+	};
+	let inicio = unsafe { core::arch::x86_64::_rdtsc() };
+	while unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(inicio) < ciclos {
+		core::hint::spin_loop();
+	}
+	true
 }
 
 pub(super) fn exibir(

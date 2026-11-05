@@ -1,11 +1,11 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Configura o mapeamento identidade, as protecoes e o tipo de cache do framebuffer.
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::{mapa_memoria, mtrr, paginas, pat, BootInfo};
+use super::{mapa_memoria, mtrr, pat, BootInfo};
 
 const PAGE_SIZE: u64 = 4096;
 const PAGE_MASK: u64 = 0x000f_ffff_ffff_f000;
@@ -126,6 +126,14 @@ pub(super) fn inicializar(
 	mapear_identidade(boot_info as *const BootInfo as u64, core::mem::size_of::<BootInfo>())?;
 	mapear_identidade(boot_info.memory_map as u64, boot_info.memory_map_size)?;
 	mapear_identidade(boot_info.frame_buffer as u64, frame_buffer_size)?;
+	if boot_info.ap_trampoline_address != 0 {
+		if boot_info.ap_trampoline_address % PAGE_SIZE != 0
+			|| boot_info.ap_trampoline_address >= 0x10_0000
+		{
+			return Err(ErroVirtual::InvalidRange);
+		}
+		permitir_execucao(boot_info.ap_trampoline_address, PAGE_SIZE as usize)?;
+	}
 	mapear_identidade(stack_pointer, 1)?;
 
 	let ranges = [
@@ -168,7 +176,6 @@ pub(super) fn inicializar(
 		configurar_cache_nao_cacheavel(boot_info.frame_buffer as u64, frame_buffer_size)?;
 	}
 	mapa_memoria::desmapear()?;
-	desmapear_intervalo(0, paginas::PAGE_SIZE)?;
 	unsafe {
 		core::arch::asm!(
 			"mov cr3, {}",
@@ -481,6 +488,41 @@ pub(super) fn desmapear_intervalo(start: u64, end: u64) -> Result<(), ErroVirtua
 					options(nostack, preserves_flags)
 				);
 			}
+		}
+		address = address
+			.checked_add(PAGE_SIZE)
+			.ok_or(ErroVirtual::InvalidRange)?;
+	}
+	Ok(())
+}
+
+pub(super) fn pagina_mapeada(address: u64) -> Result<bool, ErroVirtual> {
+	let pte = match obter_pte(address, false) {
+		Ok(pte) => pte,
+		Err(ErroVirtual::UnmappedPage) => return Ok(false),
+		Err(error) => return Err(error),
+	};
+	Ok(unsafe { ptr::read_volatile(pte) } & PRESENT != 0)
+}
+
+fn permitir_execucao(start: u64, size: usize) -> Result<(), ErroVirtual> {
+	let end = start
+		.checked_add(size as u64)
+		.ok_or(ErroVirtual::InvalidRange)?;
+	let mut address = start & !(PAGE_SIZE - 1);
+	let end_page = end
+		.checked_add(PAGE_SIZE - 1)
+		.ok_or(ErroVirtual::InvalidRange)?
+		& !(PAGE_SIZE - 1);
+	while address < end_page {
+		let pte = obter_pte(address, false)?;
+		let entry = unsafe { ptr::read_volatile(pte) };
+		if entry & PRESENT == 0 || entry & PAGE_MASK != address {
+			return Err(ErroVirtual::UnmappedPage);
+		}
+		unsafe {
+			ptr::write_volatile(pte, entry & !NO_EXECUTE);
+			core::arch::asm!("invlpg [{}]", in(reg) address, options(nostack, preserves_flags));
 		}
 		address = address
 			.checked_add(PAGE_SIZE)

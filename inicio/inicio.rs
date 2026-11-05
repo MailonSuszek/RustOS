@@ -1,10 +1,12 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Configura o framebuffer, carrega o nucleo ELF da ISO e transfere o controle.
 #![no_std]
 #![no_main]
 
+#[path = "../nucleo/drivers/video/vga.rs"]
+mod vga;
 use core::ffi::c_void;
 use core::panic::PanicInfo;
 
@@ -13,6 +15,7 @@ type Status = usize;
 
 const SUCCESS: Status = 0;
 const ALLOCATE_ANY_PAGES: u32 = 0;
+const ALLOCATE_MAX_ADDRESS: u32 = 1;
 const ALLOCATE_ADDRESS: u32 = 2;
 const LOADER_CODE: u32 = 1;
 const LOADER_DATA: u32 = 2;
@@ -23,8 +26,6 @@ const ISO_BLOCK_SIZE: usize = 2048;
 const MAX_KERNEL_SIZE: usize = 64 * 1024 * 1024;
 const BUFFER_TOO_SMALL: Status = (1usize << (usize::BITS - 1)) | 5;
 const INVALID_PARAMETER: Status = (1usize << (usize::BITS - 1)) | 2;
-const PIXEL_RGB_RESERVED_8: u32 = 0;
-const PIXEL_BGR_RESERVED_8: u32 = 1;
 const MAX_FIRMWARE_TABLES: usize = 32;
 const TABLE_KIND_OTHER: u32 = 0;
 const TABLE_KIND_ACPI_10: u32 = 1;
@@ -36,6 +37,7 @@ const RNG_SEED_NO_CPU_SUPPORT: u32 = 1;
 const RNG_SEED_CPU_NO_RESPONSE: u32 = 2;
 const RNG_SEED_NO_SOURCE: u32 = 3;
 const RNG_SEED_TPM_NO_RESPONSE: u32 = 4;
+const AP_TRAMPOLINE_MAX_ADDRESS: u64 = 0x0009_ffff;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -44,6 +46,11 @@ struct Guid {
 	data2: u16,
 	data3: u16,
 	data4: [u8; 8],
+}
+
+#[repr(C)]
+struct MpServicesProtocol {
+	get_number_of_processors: GetNumberOfProcessors,
 }
 
 #[repr(C)]
@@ -109,6 +116,8 @@ type GetMemoryMap = extern "efiapi" fn(
 	*mut usize,
 	*mut u32,
 ) -> Status;
+type GetNumberOfProcessors =
+	extern "efiapi" fn(*mut MpServicesProtocol, *mut usize, *mut usize) -> Status;
 type ExitBootServices = extern "efiapi" fn(Handle, usize) -> Status;
 type HandleProtocol =
 	extern "efiapi" fn(Handle, *const Guid, *mut *mut c_void) -> Status;
@@ -147,7 +156,7 @@ struct BootServices {
 	get_memory_map: GetMemoryMap,
 	allocate_pool: AllocatePool,
 	free_pool: FreePool,
-	_create_event: usize,
+	create_event: usize,
 	_set_timer: usize,
 	_wait_for_event: usize,
 	_signal_event: usize,
@@ -270,6 +279,10 @@ struct BootInfo {
 	memoria_slots_ocupados: u32,
 	memoria_canais_total: u32,
 	memoria_canais_ocupados: u32,
+	processadores_uefi_total: usize,
+	processadores_uefi_habilitados: usize,
+	ap_servico_disponivel: u32,
+	ap_trampoline_address: u64,
 }
 
 #[repr(C)]
@@ -361,6 +374,13 @@ const TCG2_PROTOCOL_GUID: Guid = Guid {
 	data4: [0x93, 0x0b, 0xe4, 0xd7, 0x6d, 0xb2, 0x72, 0x0f],
 };
 
+const MP_SERVICES_PROTOCOL_GUID: Guid = Guid {
+	data1: 0x3fdd_a605,
+	data2: 0xa76e,
+	data3: 0x4f46,
+	data4: [0xad, 0x29, 0x12, 0xf4, 0x53, 0x1b, 0x3d, 0x08],
+};
+
 const EFI_GLOBAL_VARIABLE_GUID: Guid = Guid {
 	data1: 0x8be4_df61,
 	data2: 0x93ca,
@@ -421,6 +441,8 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 		}
 		let boot_services = &mut *boot_services;
 		let mut boot_info = configure_frame_buffer(boot_services);
+		preparar_aps(boot_services, &mut boot_info);
+		preparar_trampoline(boot_services, &mut boot_info);
 		boot_info.acpi_rsdp = acpi_rsdp;
 		boot_info.efi_revision = efi_revision;
 		boot_info.secure_boot = secure_boot;
@@ -1231,26 +1253,31 @@ unsafe fn configure_frame_buffer(boot_services: &mut BootServices) -> BootInfo {
 	for mode_number in 0..(*(*graphics).mode).max_mode {
 		let mut info_size = 0;
 		let mut info = core::ptr::null_mut();
-		if ((*graphics).query_mode)(graphics, mode_number, &mut info_size, &mut info) != SUCCESS
-			|| info.is_null()
-		{
-			halt();
-		}
-		let matches =
-			(*info).horizontal_resolution == 640 && (*info).vertical_resolution == 480;
-		if (boot_services.free_pool)(info as *mut c_void) != SUCCESS {
-			halt();
-		}
-		if matches {
-			selected_mode = Some(mode_number);
-			break;
+		let status =
+			((*graphics).query_mode)(graphics, mode_number, &mut info_size, &mut info);
+		if !info.is_null() {
+			if status == SUCCESS && info_size >= core::mem::size_of::<GraphicsOutputModeInformation>()
+			{
+				let info = &*info;
+				let candidate = vga::Modo {
+					numero: mode_number,
+					largura: info.horizontal_resolution,
+					altura: info.vertical_resolution,
+					pixels_por_linha: info.pixels_per_scan_line,
+					formato_pixel: info.pixel_format,
+				};
+				selected_mode = vga::selecionar_modo(selected_mode, candidate);
+			}
+			if (boot_services.free_pool)(info as *mut c_void) != SUCCESS {
+				halt();
+			}
 		}
 	}
 
 	let Some(selected_mode) = selected_mode else {
 		halt();
 	};
-	if ((*graphics).set_mode)(graphics, selected_mode) != SUCCESS {
+	if ((*graphics).set_mode)(graphics, selected_mode.numero) != SUCCESS {
 		halt();
 	}
 
@@ -1259,15 +1286,17 @@ unsafe fn configure_frame_buffer(boot_services: &mut BootServices) -> BootInfo {
 		halt();
 	}
 	let info = &*mode.info;
-	let width = info.horizontal_resolution as usize;
-	let height = info.vertical_resolution as usize;
-	let stride = info.pixels_per_scan_line as usize;
-	let Some(frame_buffer_size) = stride.checked_mul(height).and_then(|n| n.checked_mul(4))
-	else {
+	let current_mode = vga::Modo {
+		numero: mode.mode,
+		largura: info.horizontal_resolution,
+		altura: info.vertical_resolution,
+		pixels_por_linha: info.pixels_per_scan_line,
+		formato_pixel: info.pixel_format,
+	};
+	let Some(frame_buffer_size) = current_mode.tamanho_framebuffer() else {
 		halt();
 	};
-	if !matches!(info.pixel_format, PIXEL_RGB_RESERVED_8 | PIXEL_BGR_RESERVED_8)
-		|| stride < width
+	if mode.mode != selected_mode.numero
 		|| mode.frame_buffer_base == 0
 		|| mode.frame_buffer_size < frame_buffer_size
 	{
@@ -1275,9 +1304,12 @@ unsafe fn configure_frame_buffer(boot_services: &mut BootServices) -> BootInfo {
 	}
 
 	let frame_buffer = mode.frame_buffer_base as *mut u32;
-	for pixel in 0..frame_buffer_size / 4 {
+	for pixel in 0..frame_buffer_size / core::mem::size_of::<u32>() {
 		core::ptr::write_volatile(frame_buffer.add(pixel), 0);
 	}
+	let width = current_mode.largura as usize;
+	let height = current_mode.altura as usize;
+	let stride = current_mode.pixels_por_linha as usize;
 	BootInfo {
 		frame_buffer: mode.frame_buffer_base as *mut u32,
 		width,
@@ -1311,6 +1343,48 @@ unsafe fn configure_frame_buffer(boot_services: &mut BootServices) -> BootInfo {
 		memoria_slots_ocupados: 0,
 		memoria_canais_total: 0,
 		memoria_canais_ocupados: 0,
+		processadores_uefi_total: 0,
+		processadores_uefi_habilitados: 0,
+		ap_servico_disponivel: 0,
+		ap_trampoline_address: 0,
+	}
+}
+
+unsafe fn preparar_aps(boot_services: &mut BootServices, boot_info: &mut BootInfo) {
+	let mut protocol = core::ptr::null_mut();
+	if (boot_services.locate_protocol)(
+		&MP_SERVICES_PROTOCOL_GUID,
+		core::ptr::null_mut(),
+		&mut protocol,
+	) != SUCCESS
+		|| protocol.is_null()
+	{
+		return;
+	}
+	boot_info.ap_servico_disponivel = 1;
+
+	let protocol = protocol.cast::<MpServicesProtocol>();
+	let mut processor_count = 0usize;
+	let mut enabled_count = 0usize;
+	if ((*protocol).get_number_of_processors)(
+		protocol,
+		&mut processor_count,
+		&mut enabled_count,
+	) != SUCCESS
+	{
+		return;
+	}
+	boot_info.processadores_uefi_total = processor_count;
+	boot_info.processadores_uefi_habilitados = enabled_count;
+}
+
+unsafe fn preparar_trampoline(boot_services: &mut BootServices, boot_info: &mut BootInfo) {
+	let mut address = AP_TRAMPOLINE_MAX_ADDRESS;
+	if (boot_services.allocate_pages)(ALLOCATE_MAX_ADDRESS, LOADER_DATA, 1, &mut address)
+		== SUCCESS
+		&& address <= AP_TRAMPOLINE_MAX_ADDRESS
+	{
+		boot_info.ap_trampoline_address = address;
 	}
 }
 

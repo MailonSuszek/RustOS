@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Coordena as etapas de inicializacao e exibicao do nucleo em ordem.
 use core::fmt::Write;
 
@@ -38,6 +38,8 @@ enum Etapa {
 	Bloco,
 	Zonas,
 	ZonaMovel,
+	PaginasInacessiveis,
+	SmpStatus,
 }
 
 struct Orquestrador {
@@ -83,7 +85,9 @@ impl Orquestrador {
 			Etapa::TabelasAcpi => Some(Etapa::Bloco),
 			Etapa::Bloco => Some(Etapa::Zonas),
 			Etapa::Zonas => Some(Etapa::ZonaMovel),
-			Etapa::ZonaMovel => None,
+			Etapa::ZonaMovel => Some(Etapa::PaginasInacessiveis),
+			Etapa::PaginasInacessiveis => Some(Etapa::SmpStatus),
+			Etapa::SmpStatus => None,
 		};
 		if self.proxima != Some(etapa) {
 			return Err(ErroOrdem::EtapaForaDeOrdem);
@@ -125,13 +129,15 @@ pub(super) enum ErroOrdem {
 	LinhaZonas,
 	ZonaMovel(super::zona_movel::ErroZonaMovel),
 	LinhaZonaMovel,
+	LinhaPaginasInacessiveis(super::mapa_memoria::ErroExibicaoInacessiveis),
+	LinhaSmp,
 }
 
 pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 	let mut orquestrador = Orquestrador::novo();
 
 	orquestrador.executar(Etapa::Identificacao, || {
-		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.11.2026");
+		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.12.2026");
 		super::aguardar_linha();
 		Ok(())
 	})?;
@@ -145,11 +151,11 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 		super::aguardar_linha();
 		Ok(())
 	})?;
-	let mut y = 0;
-	let mut line_number = 0;
+	let mut y = 38;
+	let mut line_number = 4;
 	orquestrador.executar(Etapa::Memoria, || {
-		(y, line_number) =
-			super::enderecos::exibir(boot_info).map_err(ErroOrdem::MapaMemoria)?;
+		line_number = super::enderecos::exibir(boot_info, &mut y, line_number)
+			.map_err(ErroOrdem::MapaMemoria)?;
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::Protecao, || {
@@ -376,6 +382,158 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 			.map_err(|_| ErroOrdem::LinhaZonaMovel)?;
 		Ok(())
 	})?;
+	orquestrador.executar(Etapa::PaginasInacessiveis, || {
+		line_number = super::mapa_memoria::exibir_paginas_inacessiveis(
+			boot_info,
+			&mut y,
+			line_number,
+		)
+		.map_err(ErroOrdem::LinhaPaginasInacessiveis)?;
+		Ok(())
+	})?;
+	orquestrador.executar(Etapa::SmpStatus, || {
+		super::smp::inicializar(boot_info);
+		let initialized = super::smp::quantidade_inicializados(boot_info);
+		let failed = super::smp::quantidade_falhos(boot_info);
+		let expected = super::smp::quantidade_esperada(boot_info);
+		let mp_services = if boot_info.ap_servico_disponivel != 0 {
+			"disponivel"
+		} else {
+			"indisponivel"
+		};
+		exibir_linha_smp(boot_info, &mut y, &mut line_number, "MP Services UEFI: ", mp_services)?;
+		let mut line = LinhaBuffer::novo();
+		write!(
+			&mut line,
+			"CPUs UEFI: {} habilitadas de {}",
+			boot_info.processadores_uefi_habilitados,
+			boot_info.processadores_uefi_total
+		)
+		.map_err(|_| ErroOrdem::LinhaSmp)?;
+		exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		let mut line = LinhaBuffer::novo();
+		write!(
+			&mut line,
+			"Trampolim de inicializacao AP: {}",
+			if boot_info.ap_trampoline_address != 0 {
+				"disponivel"
+			} else {
+				"indisponivel"
+			}
+		)
+		.map_err(|_| ErroOrdem::LinhaSmp)?;
+		exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		let mut line = LinhaBuffer::novo();
+		write!(
+			&mut line,
+			"APs inicializados (em espera/HLT): {} de {}; falhas: {}",
+			initialized,
+			expected,
+			failed
+		)
+		.map_err(|_| ErroOrdem::LinhaSmp)?;
+		exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		let mut line = LinhaBuffer::novo();
+		write!(
+			&mut line,
+			"Fontes NMI MADT: {}",
+			super::smp::fontes_nmi(boot_info)
+		)
+		.map_err(|_| ErroOrdem::LinhaSmp)?;
+		exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		let mut line = LinhaBuffer::novo();
+		write!(
+			&mut line,
+			"Processadores com NMI: {} de {}; falhas: {}",
+			super::smp::processadores_nmi_configurados(boot_info),
+			super::smp::processadores_nmi_esperados(boot_info),
+			super::smp::falhas_nmi(boot_info)
+		)
+		.map_err(|_| ErroOrdem::LinhaSmp)?;
+		exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		match super::pm_timer::identificar(boot_info.acpi_rsdp) {
+			Ok(timer) => {
+				let mut line = LinhaBuffer::novo();
+				write!(
+					&mut line,
+					"PM-Timer: {} 0x{:X}, {} bits, {} Hz",
+					match timer.space {
+						super::pm_timer::EspacoPmTimer::PortaIo => "porta I/O",
+						super::pm_timer::EspacoPmTimer::Memoria => "memoria fisica",
+					},
+					timer.address,
+					timer.width,
+					super::pm_timer::frequencia_hz()
+				)
+				.map_err(|_| ErroOrdem::LinhaSmp)?;
+				exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+				let mut line = LinhaBuffer::novo();
+				write!(&mut line, "PM-Timer contador inicial: 0x{:08X}", timer.counter)
+					.map_err(|_| ErroOrdem::LinhaSmp)?;
+				exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+			}
+			Err(error) => {
+				let mut line = LinhaBuffer::novo();
+				write!(
+					&mut line,
+					"PM-Timer: indisponivel ({})",
+					super::pm_timer::mensagem(error)
+				)
+				.map_err(|_| ErroOrdem::LinhaSmp)?;
+				exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+			}
+		}
+		let mut line = LinhaBuffer::novo();
+		write!(
+			&mut line,
+			"NMIs tratados: {}",
+			super::idt::nmis_recebidos()
+		)
+		.map_err(|_| ErroOrdem::LinhaSmp)?;
+		exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		Ok(())
+	})?;
+	Ok(())
+}
 
+fn exibir_linha_smp(
+	boot_info: &BootInfo,
+	y: &mut usize,
+	line_number: &mut usize,
+	label: &str,
+	value: &str,
+) -> Result<(), ErroOrdem> {
+	let mut line = LinhaBuffer::novo();
+	write!(
+		&mut line,
+		"{}{}",
+		label,
+		value
+	)
+	.map_err(|_| ErroOrdem::LinhaSmp)?;
+	exibir_linha_smp_buffer(boot_info, y, line_number, &line)
+}
+
+fn exibir_linha_smp_buffer(
+	boot_info: &BootInfo,
+	y: &mut usize,
+	line_number: &mut usize,
+	message: &LinhaBuffer,
+) -> Result<(), ErroOrdem> {
+	let mut line = LinhaBuffer::novo();
+	write!(
+		&mut line,
+		"{{{:>width$}}} {}",
+		*line_number,
+		message.como_str().map_err(|_| ErroOrdem::LinhaSmp)?,
+		width = LINE_NUMBER_WIDTH
+	)
+	.map_err(|_| ErroOrdem::LinhaSmp)?;
+	draw_scrolling_text(
+		boot_info,
+		y,
+		line.como_str().map_err(|_| ErroOrdem::LinhaSmp)?,
+	);
+	*line_number = line_number.checked_add(1).ok_or(ErroOrdem::LinhaSmp)?;
 	Ok(())
 }

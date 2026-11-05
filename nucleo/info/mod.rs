@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Reune os modulos que exibem informacoes do sistema.
 pub(crate) mod acpi;
 pub(crate) mod dmi;

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.11.2026
+// Construcao: 0.12.2026
 // Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
@@ -24,6 +24,8 @@ mod apic;
 mod idt;
 #[path = "cpu/ioapic.rs"]
 mod ioapic;
+#[path = "cpu/pm_timer.rs"]
+mod pm_timer;
 #[path = "cpu/interrupcoes.rs"]
 mod interrupcoes;
 #[path = "cpu/tsc.rs"]
@@ -54,9 +56,15 @@ mod ponteiros;
 mod regioes;
 #[path = "memoria/virtual.rs"]
 mod virtual_memory;
+#[path = "drivers/video/vga.rs"]
+mod vga;
+#[path = "cpu/smp_context.rs"]
+mod smp_context;
+#[path = "cpu/smp.rs"]
+mod smp;
 
-const PIXEL_RGB_RESERVED_8: u32 = 0;
-const PIXEL_BGR_RESERVED_8: u32 = 1;
+const PIXEL_RGB_RESERVED_8: u32 = vga::PIXEL_RGB_RESERVED_8;
+const PIXEL_BGR_RESERVED_8: u32 = vga::PIXEL_BGR_RESERVED_8;
 const MAX_FIRMWARE_TABLES: usize = 32;
 
 #[repr(C)]
@@ -94,6 +102,10 @@ pub struct BootInfo {
 	memoria_slots_ocupados: u32,
 	memoria_canais_total: u32,
 	memoria_canais_ocupados: u32,
+	processadores_uefi_total: usize,
+	processadores_uefi_habilitados: usize,
+	ap_servico_disponivel: u32,
+	ap_trampoline_address: u64,
 }
 
 #[no_mangle]
@@ -105,11 +117,23 @@ pub extern "C" fn kernel_main(boot_info: *mut BootInfo) -> ! {
 	if boot_info.frame_buffer.is_null()
 		|| boot_info.width == 0
 		|| boot_info.height == 0
-		|| boot_info.pixels_per_scan_line < boot_info.width
-		|| !matches!(
-			boot_info.pixel_format,
-			PIXEL_RGB_RESERVED_8 | PIXEL_BGR_RESERVED_8
-		)
+	{
+		halt();
+	}
+	let (Ok(width), Ok(height), Ok(pixels_per_scan_line)) = (
+		u32::try_from(boot_info.width),
+		u32::try_from(boot_info.height),
+		u32::try_from(boot_info.pixels_per_scan_line),
+	) else {
+		halt();
+	};
+	if !vga::modo_valido(vga::Modo {
+			numero: 0,
+			largura: width,
+			altura: height,
+			pixels_por_linha: pixels_per_scan_line,
+			formato_pixel: boot_info.pixel_format,
+		})
 	{
 		halt();
 	}
