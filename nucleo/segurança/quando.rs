@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.14.2026
 // Funcao: Coordena as etapas de inicializacao e exibicao do nucleo em ordem.
 use core::fmt::Write;
 
@@ -138,7 +138,7 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 	let mut orquestrador = Orquestrador::novo();
 
 	orquestrador.executar(Etapa::Identificacao, || {
-		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.12.2026");
+		draw_text(boot_info, 8, 8, "{   1} RustOS Beta v0.1 Construção 0.14.2026");
 		super::aguardar_linha();
 		Ok(())
 	})?;
@@ -387,7 +387,34 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::SmpStatus, || {
-		super::smp::inicializar(boot_info);
+		let status = if super::smp::AP_STARTUP_ENABLED {
+			"iniciando APs"
+		} else {
+			"APs desativados para evitar excecao"
+		};
+		exibir_linha_smp(boot_info, &mut y, &mut line_number, "SMP: ", status)?;
+		let mut display_error = None;
+		super::smp::inicializar(
+			boot_info,
+			|current, total| {
+				if display_error.is_some() {
+					return;
+				}
+				let mut progress = LinhaBuffer::novo();
+				if write!(&mut progress, "iniciando AP {}/{}", current, total).is_err() {
+					display_error = Some(ErroOrdem::LinhaSmp);
+					return;
+				}
+				if let Err(error) =
+					exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &progress)
+				{
+					display_error = Some(error);
+				}
+			},
+		);
+		if let Some(error) = display_error {
+			return Err(error);
+		}
 		let initialized = super::smp::quantidade_inicializados(boot_info);
 		let failed = super::smp::quantidade_falhos(boot_info);
 		let expected = super::smp::quantidade_esperada(boot_info);

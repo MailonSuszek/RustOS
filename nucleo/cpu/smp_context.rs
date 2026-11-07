@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Compartilha o estado de cada processador auxiliar iniciado pelo nucleo.
 use core::sync::atomic::{AtomicU32, AtomicU64};
 

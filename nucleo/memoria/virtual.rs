@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Configura o mapeamento identidade, as protecoes e o tipo de cache do framebuffer.
 use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};

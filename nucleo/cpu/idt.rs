@@ -1,12 +1,12 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Define e carrega a tabela de descritores de interrupcao e a TSS.
 use core::arch::global_asm;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use super::{draw_text, BootInfo};
+use super::BootInfo;
 
 const VECTOR_COUNT: usize = 256;
 const NMI_VECTOR: usize = 2;
@@ -70,6 +70,78 @@ global_asm!(
 	"2:",
 	"hlt",
 	"jmp 2b",
+	".macro EXCEPTION_NO_ERROR number",
+	".global idt_exception_\\number",
+	"idt_exception_\\number:",
+	"push 0",
+	"push \\number",
+	"jmp idt_exception_common",
+	".endm",
+	".macro EXCEPTION_ERROR number",
+	".global idt_exception_\\number",
+	"idt_exception_\\number:",
+	"push \\number",
+	"jmp idt_exception_common",
+	".endm",
+	"EXCEPTION_NO_ERROR 0",
+	"EXCEPTION_NO_ERROR 1",
+	"EXCEPTION_NO_ERROR 2",
+	"EXCEPTION_NO_ERROR 3",
+	"EXCEPTION_NO_ERROR 4",
+	"EXCEPTION_NO_ERROR 5",
+	"EXCEPTION_NO_ERROR 6",
+	"EXCEPTION_NO_ERROR 7",
+	"EXCEPTION_ERROR 8",
+	"EXCEPTION_NO_ERROR 9",
+	"EXCEPTION_ERROR 10",
+	"EXCEPTION_ERROR 11",
+	"EXCEPTION_ERROR 12",
+	"EXCEPTION_ERROR 13",
+	"EXCEPTION_ERROR 14",
+	"EXCEPTION_NO_ERROR 15",
+	"EXCEPTION_NO_ERROR 16",
+	"EXCEPTION_ERROR 17",
+	"EXCEPTION_NO_ERROR 18",
+	"EXCEPTION_NO_ERROR 19",
+	"EXCEPTION_NO_ERROR 20",
+	"EXCEPTION_ERROR 21",
+	"EXCEPTION_NO_ERROR 22",
+	"EXCEPTION_NO_ERROR 23",
+	"EXCEPTION_NO_ERROR 24",
+	"EXCEPTION_NO_ERROR 25",
+	"EXCEPTION_NO_ERROR 26",
+	"EXCEPTION_NO_ERROR 27",
+	"EXCEPTION_NO_ERROR 28",
+	"EXCEPTION_ERROR 29",
+	"EXCEPTION_ERROR 30",
+	"EXCEPTION_NO_ERROR 31",
+	"idt_exception_common:",
+	"cli",
+	"mov rdi, qword ptr [rsp]",
+	"mov rsi, qword ptr [rsp + 8]",
+	"mov rdx, qword ptr [rsp + 16]",
+	"xor ecx, ecx",
+	"cmp rdi, 14",
+	"jne 3f",
+	"mov rcx, cr2",
+	"3:",
+	"and rsp, -16",
+	"call idt_excecao_com_detalhes",
+	"4:",
+	"hlt",
+	"jmp 4b",
+	".section .rodata.idt_exception_handlers,\"a\",@progbits",
+	".global idt_exception_handlers",
+	"idt_exception_handlers:",
+	".quad idt_exception_0, idt_exception_1, idt_exception_2, idt_exception_3",
+	".quad idt_exception_4, idt_exception_5, idt_exception_6, idt_exception_7",
+	".quad idt_exception_8, idt_exception_9, idt_exception_10, idt_exception_11",
+	".quad idt_exception_12, idt_exception_13, idt_exception_14, idt_exception_15",
+	".quad idt_exception_16, idt_exception_17, idt_exception_18, idt_exception_19",
+	".quad idt_exception_20, idt_exception_21, idt_exception_22, idt_exception_23",
+	".quad idt_exception_24, idt_exception_25, idt_exception_26, idt_exception_27",
+	".quad idt_exception_28, idt_exception_29, idt_exception_30, idt_exception_31",
+	".text",
 	".global idt_nmi_handler",
 	".type idt_nmi_handler,@function",
 	"idt_nmi_handler:",
@@ -95,6 +167,7 @@ unsafe extern "C" {
 	fn idt_fatal_handler();
 	fn idt_nmi_handler();
 	fn idt_load_gdt(pointer: *const GdtPointer);
+	static idt_exception_handlers: [usize; 32];
 }
 
 #[no_mangle]
@@ -156,9 +229,15 @@ pub(super) fn inicializar() {
 	carregar_gdt();
 	carregar_tss(0);
 
-	let handler = idt_fatal_handler as *const () as usize as u64;
+	let exception_handlers = ptr::addr_of!(idt_exception_handlers).cast::<usize>();
+	let fatal_handler = idt_fatal_handler as *const () as usize as u64;
 	let idt = ptr::addr_of_mut!(IDT).cast::<IdtEntry>();
 	for vector in 0..VECTOR_COUNT {
+		let handler = if vector < 32 {
+			unsafe { ptr::read(exception_handlers.add(vector)) as u64 }
+		} else {
+			fatal_handler
+		};
 		let entry = IdtEntry::interrupt_gate(
 			handler,
 			CODE_SELECTOR,
@@ -298,18 +377,34 @@ extern "C" fn idt_excecao_fatal() -> ! {
 	let boot_info = BOOT_INFO.load(Ordering::Acquire);
 	if boot_info != 0 {
 		let boot_info = unsafe { &*(boot_info as *const BootInfo) };
-		let y = boot_info.height.saturating_sub(28);
-		draw_text(boot_info, 8, y, "FALHA FATAL: EXCECAO DE CPU");
-		draw_text(
+		super::exibir_tela_erro(
 			boot_info,
-			8,
-			y + 10,
-			"Sistema parado. Veja a ultima linha exibida acima.",
+			"FALHA FATAL: EXCECAO DE CPU",
+			"Relatorio limpo para exibir esta falha.",
 		);
 	}
 	loop {
 		unsafe {
 			core::arch::asm!("cli", "hlt", options(nomem, nostack));
+		}
+	}
+
+	#[no_mangle]
+	extern "C" fn idt_excecao_com_detalhes(
+		vector: u64,
+		error_code: u64,
+		rip: u64,
+		cr2: u64,
+	) -> ! {
+		let boot_info = BOOT_INFO.load(Ordering::Acquire);
+		if boot_info != 0 {
+			let boot_info = unsafe { &*(boot_info as *const BootInfo) };
+			super::exibir_tela_excecao(boot_info, vector, error_code, rip, cr2);
+		}
+		loop {
+			unsafe {
+				core::arch::asm!("cli", "hlt", options(nomem, nostack));
+			}
 		}
 	}
 }

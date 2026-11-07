@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
@@ -140,7 +140,11 @@ pub extern "C" fn kernel_main(boot_info: *mut BootInfo) -> ! {
 	idt::registrar_boot_info(boot_info);
 	interrupcoes::inicializar();
 	let rng_seed_status = boot_info.rng_seed_status;
-	if let Err(error) = o_que::inicializar_nucleo(boot_info, rng_seed, rng_seed_status) {
+	if let Err(error) = o_que::inicializar_nucleo(
+		boot_info,
+		rng_seed,
+		rng_seed_status,
+	) {
 		let message = match error {
 			o_que::ErroInicializacao::AlocadorPaginas(_) => "Erro alocador RAM",
 			o_que::ErroInicializacao::ReservaRegioes(_) => "Erro reserva nucleo",
@@ -160,8 +164,8 @@ pub extern "C" fn kernel_main(boot_info: *mut BootInfo) -> ! {
 				},
 			o_que::ErroInicializacao::HeapNucleo(_) => "Erro heap nucleo",
 		};
-		draw_text(boot_info, 8, 48, message);
-		// Continue to show IOAPIC info even if init partially failed
+		exibir_tela_erro(boot_info, "FALHA NA INICIALIZACAO", message);
+		halt();
 	}
 
 	let _ = quando::executar(boot_info);
@@ -193,31 +197,175 @@ fn draw_text(boot_info: &BootInfo, mut x: usize, y: usize, text: &str) {
 	}
 }
 
-fn draw_scrolling_text(boot_info: &BootInfo, y: &mut usize, text: &str) {
+pub(crate) fn exibir_tela_erro(boot_info: &BootInfo, titulo: &str, mensagem: &str) {
+	for y in 0..boot_info.height {
+		for x in 0..boot_info.width {
+			unsafe {
+				ptr::write_volatile(
+					boot_info
+						.frame_buffer
+						.add(y * boot_info.pixels_per_scan_line + x),
+					0,
+				);
+			}
+		}
+	}
+
+	draw_text_quebrado(boot_info, 8, 8, titulo);
+	draw_text_quebrado(boot_info, 8, 28, mensagem);
+	draw_text_quebrado(boot_info, 8, 48, "Sistema parado.");
+}
+
+pub(crate) fn exibir_tela_excecao(
+	boot_info: &BootInfo,
+	vector: u64,
+	error_code: u64,
+	rip: u64,
+	cr2: u64,
+) {
+	for y in 0..boot_info.height {
+		for x in 0..boot_info.width {
+			unsafe {
+				ptr::write_volatile(
+					boot_info
+						.frame_buffer
+						.add(y * boot_info.pixels_per_scan_line + x),
+					0,
+				);
+			}
+		}
+	}
+
+	draw_text_quebrado(boot_info, 8, 8, "EXCECAO DE CPU");
+	draw_text_quebrado(boot_info, 8, 28, "VECTOR:");
+	draw_hexadecimal(boot_info, 8 + 8 * 6, 28, vector, 2);
+	draw_text_quebrado(boot_info, 8, 48, "ERROR:");
+	draw_hexadecimal(boot_info, 8 + 7 * 6, 48, error_code, 16);
+	draw_text_quebrado(boot_info, 8, 68, "RIP:");
+	draw_hexadecimal(boot_info, 8 + 5 * 6, 68, rip, 16);
+	if vector == 14 {
+		draw_text_quebrado(boot_info, 8, 88, "CR2:");
+		draw_hexadecimal(boot_info, 8 + 5 * 6, 88, cr2, 16);
+	}
+	draw_text_quebrado(boot_info, 8, 108, "SISTEMA PARADO");
+}
+
+fn draw_text_quebrado(boot_info: &BootInfo, x: usize, mut y: usize, text: &str) {
+	const CHARACTER_WIDTH: usize = 6;
 	const LINE_HEIGHT: usize = 10;
 	const TEXT_HEIGHT: usize = 8;
 
-	while y.saturating_add(TEXT_HEIGHT) > boot_info.height {
-		if boot_info.height <= LINE_HEIGHT {
-			*y = 0;
-			break;
-		}
-		scroll_up(boot_info, LINE_HEIGHT);
-		*y = y.saturating_sub(LINE_HEIGHT);
+	let max_columns = boot_info.width.saturating_sub(x) / CHARACTER_WIDTH;
+	if max_columns == 0 {
+		return;
 	}
 
-	for (column, character) in text.chars().enumerate() {
-		let glyph = glyph(character);
-		for (row, bits) in glyph.iter().enumerate() {
+	let mut column = 0;
+	for character in text.chars() {
+		if column == max_columns {
+			column = 0;
+			y = y.saturating_add(LINE_HEIGHT);
+		}
+		if y.saturating_add(TEXT_HEIGHT) > boot_info.height {
+			return;
+		}
+		let character_glyph = glyph(character);
+		for (row, bits) in character_glyph.iter().enumerate() {
 			for pixel_column in 0..5 {
 				if bits & (1 << (4 - pixel_column)) != 0 {
-					draw_pixel(boot_info, 8 + column * 6 + pixel_column, *y + row);
+					draw_pixel(
+						boot_info,
+						x + column * CHARACTER_WIDTH + pixel_column,
+						y + row,
+					);
+				}
+			}
+		}
+		column += 1;
+	}
+}
+
+fn draw_hexadecimal(
+	boot_info: &BootInfo,
+	x: usize,
+	y: usize,
+	value: u64,
+	digits: usize,
+) {
+	for digit in 0..digits {
+		let shift = (digits - digit - 1) * 4;
+		let nibble = ((value >> shift) & 0xf) as u8;
+		let character = match nibble {
+			0..=9 => char::from(b'0' + nibble),
+			_ => char::from(b'A' + nibble - 10),
+		};
+		let character_glyph = glyph(character);
+		for (row, bits) in character_glyph.iter().enumerate() {
+			for pixel_column in 0..5 {
+				if bits & (1 << (4 - pixel_column)) != 0 {
+					draw_pixel(
+						boot_info,
+						x + digit * 6 + pixel_column,
+						y + row,
+					);
 				}
 			}
 		}
 	}
+}
+
+fn draw_scrolling_text(boot_info: &BootInfo, y: &mut usize, text: &str) {
+	const LINE_HEIGHT: usize = 10;
+	const TEXT_HEIGHT: usize = 8;
+	let max_columns = boot_info.width.saturating_sub(7) / 6;
+	if max_columns == 0 {
+		prepare_text_line(boot_info, y, LINE_HEIGHT, TEXT_HEIGHT);
+		*y = y.saturating_add(LINE_HEIGHT);
+		return;
+	}
+
+	let mut line_column = 0;
+	if text.is_empty() {
+		prepare_text_line(boot_info, y, LINE_HEIGHT, TEXT_HEIGHT);
+	}
+	for character in text.chars() {
+		if line_column == max_columns {
+			*y = y.saturating_add(LINE_HEIGHT);
+			line_column = 0;
+		}
+		prepare_text_line(boot_info, y, LINE_HEIGHT, TEXT_HEIGHT);
+		let glyph = glyph(character);
+		for (row, bits) in glyph.iter().enumerate() {
+			for pixel_column in 0..5 {
+				if bits & (1 << (4 - pixel_column)) != 0 {
+					draw_pixel(
+						boot_info,
+						8 + line_column * 6 + pixel_column,
+						*y + row,
+					);
+				}
+			}
+		}
+		line_column += 1;
+	}
 	*y = y.saturating_add(LINE_HEIGHT);
 	aguardar_linha();
+}
+
+fn prepare_text_line(
+	boot_info: &BootInfo,
+	y: &mut usize,
+	line_height: usize,
+	text_height: usize,
+) {
+	while y.saturating_add(text_height) > boot_info.height {
+		if boot_info.height <= line_height {
+			*y = 0;
+			break;
+		}
+		scroll_up(boot_info, line_height);
+		*y = y.saturating_sub(line_height);
+	}
 }
 
 /// Pausa entre linhas para que a listagem apareca uma por uma.

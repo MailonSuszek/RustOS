@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Inicializa e informa o estado de protecao da memoria do nucleo.
 use core::fmt::Write;
 
@@ -25,16 +25,18 @@ pub(super) fn inicializar_nucleo(
 	rng_seed: [u8; 32],
 	rng_seed_status: u32,
 ) -> Result<(), ErroInicializacao> {
-	let _ = paginas::inicializar(
+	paginas::inicializar(
 		boot_info.memory_map,
 		boot_info.memory_map_size,
 		boot_info.memory_descriptor_size,
-	);
-	let _ = regioes::reservar(boot_info);
-	let _ = virtual_memory::inicializar(boot_info);
-	let _ = aleatorio::inicializar(rng_seed, rng_seed_status);
+	)
+	.map_err(ErroInicializacao::AlocadorPaginas)?;
+	regioes::reservar(boot_info).map_err(ErroInicializacao::ReservaRegioes)?;
+	virtual_memory::inicializar(boot_info).map_err(ErroInicializacao::ProtecaoVirtual)?;
+	aleatorio::inicializar(rng_seed, rng_seed_status)
+		.map_err(ErroInicializacao::Aleatoriedade)?;
 	interrupcoes::inicializar();
-	let _ = memoria_dinamica::inicializar();
+	memoria_dinamica::inicializar().map_err(ErroInicializacao::HeapNucleo)?;
 	Ok(())
 }
 

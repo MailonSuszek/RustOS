@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Configura e exibe os oito tipos da Page Attribute Table.
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};

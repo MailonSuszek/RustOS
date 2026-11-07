@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Inicializa e configura o controlador local APIC.
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};

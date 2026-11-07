@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Divide a RAM em zonas de hardware e lista cada zona em uma linha.
 use core::fmt::{self, Write};
 

@@ -4,7 +4,7 @@
 **Funcao:** Documenta a estrutura, os requisitos, a compilacao e a execucao do RustOS.<br>
 **Nome:** RustOS Beta  
 **Versao:** v0.1  
-**Construcao:** 0.13.2026<br>
+**Construcao:** 0.14.2026<br>
 **Arquitetura:** x86-64  
 **Boot:** UEFI
 
@@ -18,7 +18,7 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `inicio/inicio.so`: segundo estagio compilado para UEFI. Apesar da extensao `.so`, e um executavel PE/COFF UEFI, nao uma biblioteca ELF Linux.
 - `nucleo/nucleo.rs`: codigo-fonte do nucleo freestanding x86-64.
 - `nucleo/cpu/apic.rs`: habilita o APIC local em modo xAPIC ou x2APIC.
-- `nucleo/cpu/idt.rs`: cria e carrega uma IDT com 256 vetores; o vetor NMI conta eventos e retorna, enquanto os demais ainda usam o handler fatal.
+- `nucleo/cpu/idt.rs`: cria e carrega uma IDT com 256 vetores; o vetor NMI conta eventos e retorna, e as exceções de CPU mostram vetor, código de erro, RIP e CR2 (em page faults) em uma tela de falha limpa.
 - `nucleo/cpu/smp_context.rs` e `nucleo/cpu/smp.rs`: iniciam APs habilitados na MADT usando INIT/SIPI, um trampolim abaixo de 1 MiB, pilhas independentes e a IDT compartilhada.
 - `nucleo/cpu/ioapic.rs`: localiza e configura os IOAPICs pela MADT (ID, versão, endereço físico e intervalo GSI), enumera processadores locais, interpreta regras de NMI por UID e fornece resumo MADT (endereço do Local APIC, processadores, controladores, ISOs, NMIs) e detecção de HPET.
 - `nucleo/cpu/pm_timer.rs`: localiza o PM-Timer na FADT, valida registros I/O ou memoria e registra largura, frequencia e contador.
@@ -51,7 +51,7 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI` e `inicio.so` na raiz.
 - `compilar.sh`: compila os estagios UEFI e o nucleo freestanding, e gera a imagem FAT e a ISO.
 - `.vscode/tasks.json`: tarefas para compilar e executar no QEMU.
-- `RustOS_Beta_v0.1_Construcao_0.13.2026.iso`: imagem ISO gerada na raiz do projeto.
+- `RustOS_Beta_v0.1_Construcao_0.14.2026.iso`: imagem ISO gerada na raiz do projeto.
 
 Os estagios sao binarios separados: o firmware inicia `BOOTX64.EFI`, que carrega `inicio.so` de `inicio.img`; `inicio.so` procura e carrega `nucleo/Rust` diretamente dos setores da ISO 9660. O nucleo recebe do carregador os dados do framebuffer e, apos a transferencia, executa sem os servicos de boot UEFI.
 
@@ -68,7 +68,7 @@ O nome `NUCLEO/RUST` pode aparecer como `NUCLEO/RUST.;1` ao listar a ISO, devido
 Na tela, o nucleo mostra as etapas nesta ordem:
 
 ```text
-{   1} RustOS Beta v0.1 Construção 0.13.2026
+{   1} RustOS Beta v0.1 Construção 0.14.2026
 {   2} Caminho: nucleo/Rust
 {   3} Organização de segurança de execução
 {   4} Lista de intervalos físicos de memoria
@@ -149,7 +149,7 @@ O modulo MTRR exige suporte a MTRR e PAT, confirma que as regioes UEFI de RAM co
 
 O modulo PAT escreve as oito entradas na ordem exibida. Se PAT ou MTRR nao forem suportados ou as verificacoes MTRR falharem, o framebuffer continua UC e a linha PAT informa que a tabela do firmware foi preservada quando PAT nao puder ser configurada.
 
-Depois da listagem inicial dos intervalos, o nucleo exibe “RAM proteção ativo”, inicializa o APIC local e os IOAPICs, mostra a versao EFI, lista os ponteiros das tabelas UEFI e ativa o CRNG. No fim do boot, o nucleo usa os IDs habilitados da MADT para iniciar cada AP com INIT/SIPI; o carregador UEFI reserva o trampolim de baixa memoria e o kernel prepara CR3 e uma pilha por processador. Cada AP valida seu ID local, carrega a IDT compartilhada e habilita seu APIC local. As entradas Local APIC NMI e Local x2APIC NMI da MADT sao associadas ao UID do processador e programam os pinos LINT com polaridade e disparo informados; cada AP e o BSP aplicam suas regras. As interrupcoes mascaraveis continuam desabilitadas e as entradas do IOAPIC ficam mascaradas. A IDT trata NMI pelo vetor 2, incrementa um contador atomico e retorna; os outros vetores ainda usam o handler fatal. A FADT e consultada para localizar e ler o PM-Timer; os detalhes ficam nas linhas finais.
+Depois da listagem inicial dos intervalos, o nucleo exibe “RAM proteção ativo”, inicializa o APIC local e os IOAPICs, mostra a versao EFI, lista os ponteiros das tabelas UEFI e ativa o CRNG. A inicializacao de APs por INIT/SIPI esta temporariamente desativada para evitar a excecao de CPU observada no hardware real; a tela informa esse estado e o boot prossegue no processador BSP. O carregador ainda reserva o trampolim de baixa memoria. As interrupcoes mascaraveis continuam desabilitadas e as entradas do IOAPIC ficam mascaradas. A IDT trata NMI pelo vetor 2, incrementa um contador atomico e retorna. Em excecoes fatais, a tela limpa o relatorio e mostra o vetor, o codigo de erro, o endereco RIP e, para page faults, o endereco CR2. A FADT e consultada para localizar e ler o PM-Timer; os detalhes ficam nas linhas finais.
 
 Depois da mensagem de aleatoriedade, o nucleo lista as areas de hardware reservadas, no formato `endereco inicial - endereco final (tamanho) rotulo`:
 
@@ -170,7 +170,7 @@ A reserva e feita em duas camadas: as faixas sao marcadas no bitmap do alocador 
 
 A primeira pagina fisica (`0x0-0xFFF`) tambem e marcada como indisponivel no bitmap e removida do mapeamento identidade. Assim, ela nao pode ser entregue pelo alocador nem acessada pelo nucleo por meio desse mapeamento.
 
-A linha `RAM disponível` conta as páginas livres no bitmap real do alocador após as reservas do kernel e das regiões de hardware. As ultimas linhas informam a disponibilidade do protocolo MP Services, das CPUs habilitadas na UEFI, do trampolim, a quantidade de APs inicializados e estacionados em `HLT`/falhos, as fontes NMI MADT encontradas, quantos processadores tiveram seus LINTs configurados, os dados e contador inicial do PM-Timer e os NMIs recebidos. APs em `HLT` estao inicializados, mas ainda nao executam tarefas do sistema; nao ha escalonador SMP nem distribuicao de trabalho implementados. A inicializacao SMP usa os IDs de processador publicados pela MADT; as contagens da UEFI sao informativas e ajudam a expor divergencias. A linha `RAM física utilizável` soma a memoria fisica convencional descrita pelo UEFI dentro do limite do alocador; ambas convertem bytes para GB decimal (1 GB = 1.000.000.000 bytes) e arredondam para duas casas decimais.
+A linha `RAM disponível` conta as páginas livres no bitmap real do alocador após as reservas do kernel e das regiões de hardware. As ultimas linhas informam a disponibilidade do protocolo MP Services, das CPUs habilitadas na UEFI, do trampolim, a quantidade de APs inicializados e estacionados em `HLT`/falhos, as fontes NMI MADT encontradas, quantos processadores tiveram seus LINTs configurados, os dados e contador inicial do PM-Timer e os NMIs recebidos. APs em `HLT` estao inicializados, mas ainda nao executam tarefas do sistema; nao ha escalonador SMP nem distribuicao de trabalho implementados. O envio INIT/SIPI está desativado temporariamente devido a uma exceção observada no hardware real; o sistema continua apenas no BSP até a causa do erro ser corrigida. A linha `RAM física utilizável` soma a memoria fisica convencional descrita pelo UEFI dentro do limite do alocador; ambas convertem bytes para GB decimal (1 GB = 1.000.000.000 bytes) e arredondam para duas casas decimais.
 
 O núcleo inicializa um alocador de páginas físicas usando apenas memória convencional UEFI, reserva as áreas do núcleo/framebuffer/dados de boot e as áreas de hardware, e instala um mapeamento identidade dos primeiros 64 GiB. Código do núcleo fica somente leitura/executável; dados ficam leitura/escrita/não executáveis; o restante do mapeamento fica não executável. NX e proteção de escrita (CR0.WP) são habilitados. O framebuffer recebe WC quando as verificações de PAT/MTRR passam; caso contrário, permanece UC. O heap global usa páginas físicas e executa um teste de alocação na inicialização. O alocador gerencia endereços físicos abaixo de 64 GiB. Ainda não há processos de usuário nem separação de espaços de endereçamento por processo. Arquivos permanecem no armazenamento e seus dados são carregados na RAM quando usados. A listagem mostra endereços e tipos UEFI; as linhas rolam a tela quando necessário. Todas as linhas, de qualquer etapa, são desenhadas com uma pausa de 25 ms entre si, para que apareçam uma por uma.
 

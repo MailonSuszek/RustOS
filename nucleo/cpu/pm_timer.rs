@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Identifica e le o temporizador PM descrito pela tabela ACPI FADT.
 use core::ptr;
 

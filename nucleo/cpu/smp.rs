@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Inicia APs habilitados na MADT usando o protocolo INIT/SIPI.
 use core::arch::global_asm;
 use core::ptr;
@@ -13,14 +13,15 @@ use super::{apic, idt, ioapic, paginas, tsc, virtual_memory, BootInfo};
 
 const MAX_PROCESSADORES: usize = 256;
 const MAX_APS: usize = MAX_PROCESSADORES - 1;
+pub(super) const AP_STARTUP_ENABLED: bool = false;
 const AP_STACK_PAGES: usize = 2;
 const AP_IST_PAGES: usize = 2;
 const SIPI_BASE: u32 = 0x600;
 const INIT_ASSERT: u32 = 0x0000_c500;
 const INIT_DEASSERT: u32 = 0x0000_8500;
-const STARTUP_POLLS: usize = 20_000_000;
-const AP_START_TIMEOUT_US: u64 = 250_000;
-const AP_SECOND_START_TIMEOUT_US: u64 = 500_000;
+const STARTUP_POLLS_PER_MICROSECOND: u64 = 400;
+const AP_START_TIMEOUT_US: u64 = 50_000;
+const AP_SECOND_START_TIMEOUT_US: u64 = 100_000;
 const TRAMPOLINE_LIMIT: u64 = 0x000a_0000;
 
 global_asm!(
@@ -156,7 +157,10 @@ enum EsperaAp {
 	Pendente,
 }
 
-pub(super) fn inicializar(boot_info: &BootInfo) {
+pub(super) fn inicializar(
+	boot_info: &BootInfo,
+	mut mostrar_progresso: impl FnMut(usize, usize),
+) {
 	AP_COUNT.store(0, Ordering::Relaxed);
 	AP_EXPECTED.store(0, Ordering::Relaxed);
 	AP_FAILURES.store(0, Ordering::Relaxed);
@@ -170,6 +174,9 @@ pub(super) fn inicializar(boot_info: &BootInfo) {
 		boot_info.processadores_uefi_habilitados,
 		Ordering::Relaxed,
 	);
+	if !AP_STARTUP_ENABLED {
+		return;
+	}
 
 	let bsp_id = match apic::id_local() {
 		Ok(id) => id,
@@ -280,7 +287,8 @@ pub(super) fn inicializar(boot_info: &BootInfo) {
 		return;
 	};
 
-	for context in &AP_CONTEXTOS[..context_count] {
+	for (index, context) in AP_CONTEXTOS[..context_count].iter().enumerate() {
+		mostrar_progresso(index + 1, context_count);
 		if !iniciar_ap(trampoline, cr3, cr0 as u32, cr4, context) {
 			context.estado.store(AP_FALHOU, Ordering::Release);
 		}
@@ -491,8 +499,9 @@ fn aguardar_ap(context: &ApInicializacao, microsegundos: u64) -> EsperaAp {
 		.and_then(|frequencia| frequencia.checked_mul(microsegundos))
 		.map(|total| total / 1_000_000);
 	let inicio = unsafe { core::arch::x86_64::_rdtsc() };
-	let mut polls = 0usize;
+	let mut polls = 0u64;
 	let mut iniciando = false;
+	let max_polls = microsegundos.saturating_mul(STARTUP_POLLS_PER_MICROSECOND);
 	loop {
 		match context.estado.load(Ordering::Acquire) {
 			AP_INICIALIZADO => return EsperaAp::Inicializado,
@@ -500,13 +509,12 @@ fn aguardar_ap(context: &ApInicializacao, microsegundos: u64) -> EsperaAp {
 			AP_INICIANDO => iniciando = true,
 			_ => {}
 		}
+		polls = polls.saturating_add(1);
+		if polls >= max_polls {
+			break;
+		}
 		if let Some(ciclos) = ciclos {
 			if unsafe { core::arch::x86_64::_rdtsc() }.wrapping_sub(inicio) >= ciclos {
-				break;
-			}
-		} else {
-			polls += 1;
-			if polls >= STARTUP_POLLS {
 				break;
 			}
 		}

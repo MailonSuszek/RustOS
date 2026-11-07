@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.13.2026
+// Construcao: 0.14.2026
 // Funcao: Reserva as areas de hardware que nao podem ser usadas como RAM comum.
 use core::fmt::{self, Write};
 
