@@ -1,11 +1,12 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Identifica e le o temporizador PM descrito pela tabela ACPI FADT.
 use core::ptr;
 
 use super::{ioapic, virtual_memory};
 
+// Offsets fixos do FADT (ACPI 1.0 em diante), iguais aos usados pelo ACPICA.
 const FADT_PM_TIMER_BLOCK_OFFSET: usize = 76;
 const FADT_PM_TIMER_LENGTH_OFFSET: usize = 91;
 const FADT_FLAGS_OFFSET: usize = 112;
@@ -56,25 +57,35 @@ pub(super) fn identificar(rsdp: *const u8) -> Result<PmTimer, ErroPmTimer> {
 	if flags & FADT_HARDWARE_REDUCED != 0 {
 		return Err(ErroPmTimer::AcpiHardwareReduzido);
 	}
-	let width = if flags & FADT_TIMER_32_BIT != 0 { 32 } else { 24 };
+	let declared_width = if flags & FADT_TIMER_32_BIT != 0 {
+		32
+	} else {
+		24
+	};
 
 	let mut register = None;
 	if table_length >= FADT_X_PM_TIMER_BLOCK_OFFSET + 12 {
 		let gas = unsafe { fadt.add(FADT_X_PM_TIMER_BLOCK_OFFSET) };
 		let address_space = unsafe { gas.read() };
 		let bit_width = unsafe { gas.add(1).read() };
+		let bit_offset = unsafe { gas.add(2).read() };
 		let access_size = unsafe { gas.add(3).read() };
 		let address = unsafe { gas.add(4).cast::<u64>().read_unaligned() };
 		if address != 0 {
-			if bit_width < width || (access_size != 0 && access_size != 3) {
+			if bit_offset != 0 || access_size > 4 {
 				return Err(ErroPmTimer::TabelaInvalida);
 			}
+			let width = match bit_width {
+				0 => declared_width,
+				24 | 32 => bit_width,
+				_ => return Err(ErroPmTimer::TabelaInvalida),
+			};
 			let space = match address_space {
 				GAS_SYSTEM_MEMORY => EspacoPmTimer::Memoria,
 				GAS_SYSTEM_IO => EspacoPmTimer::PortaIo,
 				_ => return Err(ErroPmTimer::EspacoDeEnderecoNaoSuportado),
 			};
-			register = Some((address, space));
+			register = Some((address, space, width));
 		}
 	}
 
@@ -89,13 +100,13 @@ pub(super) fn identificar(rsdp: *const u8) -> Result<PmTimer, ErroPmTimer> {
 				.read_unaligned()
 		};
 		let register_length = unsafe { fadt.add(FADT_PM_TIMER_LENGTH_OFFSET).read() };
-		if legacy_port == 0 || register_length < 4 {
+		if legacy_port == 0 || (register_length != 0 && register_length < 4) {
 			return Err(ErroPmTimer::EnderecoInvalido);
 		}
-		register = Some((u64::from(legacy_port), EspacoPmTimer::PortaIo));
+		register = Some((u64::from(legacy_port), EspacoPmTimer::PortaIo, declared_width));
 	}
 
-	let (address, space) = register.ok_or(ErroPmTimer::EnderecoInvalido)?;
+	let (address, space, width) = register.ok_or(ErroPmTimer::EnderecoInvalido)?;
 	let raw_count = match space {
 		EspacoPmTimer::PortaIo => {
 			if address > u64::from(u16::MAX) || address + 4 > 0x1_0000 {

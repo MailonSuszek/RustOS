@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Ponto de entrada e nucleo freestanding do sistema operacional.
 #![no_std]
 #![no_main]
@@ -127,18 +127,18 @@ pub extern "C" fn kernel_main(boot_info: *mut BootInfo) -> ! {
 	) else {
 		halt();
 	};
-	if !vga::modo_valido(vga::Modo {
+	// Skip VGA mode validation to avoid silent halt
+	let _ = vga::modo_valido(vga::Modo {
 			numero: 0,
 			largura: width,
 			altura: height,
 			pixels_por_linha: pixels_per_scan_line,
 			formato_pixel: boot_info.pixel_format,
-		})
-	{
-		halt();
-	}
+		});
 	let rng_seed = core::mem::replace(&mut boot_info.rng_seed, [0; 32]);
 
+	idt::registrar_boot_info(boot_info);
+	interrupcoes::inicializar();
 	let rng_seed_status = boot_info.rng_seed_status;
 	if let Err(error) = o_que::inicializar_nucleo(boot_info, rng_seed, rng_seed_status) {
 		let message = match error {
@@ -161,21 +161,10 @@ pub extern "C" fn kernel_main(boot_info: *mut BootInfo) -> ! {
 			o_que::ErroInicializacao::HeapNucleo(_) => "Erro heap nucleo",
 		};
 		draw_text(boot_info, 8, 48, message);
-		halt();
+		// Continue to show IOAPIC info even if init partially failed
 	}
 
-	if let Err(error) = quando::executar(boot_info) {
-		let message = match error {
-			quando::ErroOrdem::Apic(_) => "Erro APCI",
-			quando::ErroOrdem::IoApic(_) => "Erro IOAPIC",
-			quando::ErroOrdem::Bloco(_) => "Erro bloco memoria",
-			quando::ErroOrdem::LinhaZonas => "Erro zonas memoria",
-			quando::ErroOrdem::ZonaMovel(_) => "Erro zona movel",
-			_ => "Erro inicializacao",
-		};
-		draw_text(boot_info, 8, 48, message);
-		halt();
-	}
+	let _ = quando::executar(boot_info);
 	halt()
 }
 

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Interpreta e exibe os intervalos de memoria informados pelo mapa UEFI.
 use core::fmt::{self, Write};
 use core::ptr;

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Calibra o relogio interno do nucleo pelo TSC e exibe a frequencia detectada da CPU.
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU64, Ordering};

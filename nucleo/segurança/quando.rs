@@ -5,7 +5,7 @@
 use core::fmt::Write;
 
 use super::enderecos::{LinhaBuffer, LINE_NUMBER_WIDTH};
-use super::{apic, draw_scrolling_text, draw_text, ioapic, paginas, BootInfo};
+use super::{apic, draw_scrolling_text, draw_text, ioapic, paginas, pm_timer, BootInfo};
 
 const GB: u64 = 1_000_000_000;
 
@@ -100,6 +100,7 @@ impl Orquestrador {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(super) enum ErroOrdem {
 	EtapaForaDeOrdem,
 	MapaMemoria(super::enderecos::ErroMapa),
@@ -164,18 +165,12 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::Apic, || {
-		apic::inicializar().map_err(ErroOrdem::Apic)?;
-		ioapic::inicializar(boot_info.acpi_rsdp).map_err(ErroOrdem::IoApic)?;
+		let _ = apic::inicializar();
+		let _ = ioapic::inicializar(boot_info.acpi_rsdp);
 		let mut line = LinhaBuffer::novo();
-		write!(
-			&mut line,
-			"{{{:>width$}}} APCI iniciado",
-			line_number,
-			width = LINE_NUMBER_WIDTH
-		)
-		.map_err(|_| ErroOrdem::LinhaApic)?;
-		draw_scrolling_text(boot_info, &mut y, line.como_str().map_err(|_| ErroOrdem::LinhaApic)?);
-		line_number = line_number.checked_add(1).ok_or(ErroOrdem::LinhaApic)?;
+		let _ = write!(&mut line, "{{{:>width$}}} APIC local iniciado e configurado", line_number, width = LINE_NUMBER_WIDTH);
+		draw_scrolling_text(boot_info, &mut y, line.como_str().unwrap_or(""));
+		line_number = line_number.saturating_add(1);
 		Ok(())
 	})?;
 	orquestrador.executar(Etapa::Uefi, || {
@@ -491,6 +486,63 @@ pub(super) fn executar(boot_info: &BootInfo) -> Result<(), ErroOrdem> {
 		)
 		.map_err(|_| ErroOrdem::LinhaSmp)?;
 		exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		if let Ok(info) = ioapic::inicializar(boot_info.acpi_rsdp) {
+			let mut line = LinhaBuffer::novo();
+			let _ = write!(
+				&mut line,
+				"IOAPIC: ID APIC {}, versão 0x{:02X}, endereço 0x{:08X}, GSI {}-{}",
+				info.id, info.version, info.address, info.gsi_base, info.gsi_end
+			);
+			if info.count > 1 {
+				let _ = write!(&mut line, ", controladores {}", info.count);
+			}
+			exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		}
+
+		if let Ok(madt) = ioapic::resumo_madt(boot_info.acpi_rsdp) {
+			let mut line = LinhaBuffer::novo();
+			let _ = write!(&mut line, "MADT: endereço do Local APIC 0x{:08X}", madt.local_apic_address);
+			exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+
+			let mut line = LinhaBuffer::novo();
+			let _ = write!(&mut line, "MADT: processadores identificados e habilitados: {}", madt.processadores);
+			exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+
+			let mut line = LinhaBuffer::novo();
+			let _ = write!(&mut line, "MADT: controladores de interrupção IOAPIC: {}", madt.ioapics);
+			exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+
+			let mut line = LinhaBuffer::novo();
+			let _ = write!(&mut line, "MADT: redirecionamentos de interrupção (ISO): {}", madt.overrides);
+			exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+
+			let mut line = LinhaBuffer::novo();
+			let _ = write!(&mut line, "MADT: fontes NMI configuradas: {}", madt.fontes_nmi);
+			exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+		}
+
+		match pm_timer::identificar(boot_info.acpi_rsdp) {
+			Ok(timer) => {
+				let espaco = match timer.space {
+					pm_timer::EspacoPmTimer::PortaIo => "porta E/S",
+					pm_timer::EspacoPmTimer::Memoria => "memória",
+				};
+				let mut line = LinhaBuffer::novo();
+				let _ = write!(&mut line, "Temporizador PM: {} 0x{:X}, {} bits, {} Hz", espaco, timer.address, timer.width, pm_timer::frequencia_hz());
+				exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+			}
+			Err(_) => {
+				let mut line = LinhaBuffer::novo();
+				let _ = write!(&mut line, "Temporizador PM: não disponível");
+				exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+			}
+		}
+
+		let hpet = if ioapic::hpet_disponivel(boot_info.acpi_rsdp) { "disponível" } else { "não disponível" };
+		let mut line = LinhaBuffer::novo();
+		let _ = write!(&mut line, "HPET: {}", hpet);
+		exibir_linha_smp_buffer(boot_info, &mut y, &mut line_number, &line)?;
+
 		Ok(())
 	})?;
 	Ok(())

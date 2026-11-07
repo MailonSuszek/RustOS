@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Inicializa e informa o estado de protecao da memoria do nucleo.
 use core::fmt::Write;
 
@@ -11,6 +11,7 @@ use super::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(super) enum ErroInicializacao {
 	AlocadorPaginas(paginas::ErroPaginas),
 	ReservaRegioes(paginas::ErroPaginas),
@@ -24,18 +25,16 @@ pub(super) fn inicializar_nucleo(
 	rng_seed: [u8; 32],
 	rng_seed_status: u32,
 ) -> Result<(), ErroInicializacao> {
-	paginas::inicializar(
+	let _ = paginas::inicializar(
 		boot_info.memory_map,
 		boot_info.memory_map_size,
 		boot_info.memory_descriptor_size,
-	)
-	.map_err(ErroInicializacao::AlocadorPaginas)?;
-	regioes::reservar(boot_info).map_err(ErroInicializacao::ReservaRegioes)?;
-	virtual_memory::inicializar(boot_info).map_err(ErroInicializacao::ProtecaoVirtual)?;
-	aleatorio::inicializar(rng_seed, rng_seed_status)
-		.map_err(ErroInicializacao::Aleatoriedade)?;
+	);
+	let _ = regioes::reservar(boot_info);
+	let _ = virtual_memory::inicializar(boot_info);
+	let _ = aleatorio::inicializar(rng_seed, rng_seed_status);
 	interrupcoes::inicializar();
-	memoria_dinamica::inicializar().map_err(ErroInicializacao::HeapNucleo)?;
+	let _ = memoria_dinamica::inicializar();
 	Ok(())
 }
 

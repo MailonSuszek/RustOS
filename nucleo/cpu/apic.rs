@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Inicializa e configura o controlador local APIC.
 use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -93,7 +93,7 @@ pub(super) fn inicializar_ap() -> Result<(), ErroApic> {
 		if features.ecx & (1 << 21) == 0 {
 			return Err(ErroApic::CpuSemApic);
 		}
-		apic_base = (apic_base | APIC_GLOBAL_ENABLE | X2APIC_ENABLE) & !APIC_BASE_ADDRESS_MASK;
+		apic_base |= APIC_GLOBAL_ENABLE | X2APIC_ENABLE;
 		unsafe {
 			write_msr(APIC_BASE_MSR, apic_base);
 			write_msr(X2APIC_SPURIOUS_VECTOR_MSR, u64::from(APIC_SPURIOUS_VECTOR));

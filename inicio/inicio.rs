@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Configura o framebuffer, carrega o nucleo ELF da ISO e transfere o controle.
 #![no_std]
 #![no_main]
@@ -9,9 +9,18 @@
 mod vga;
 use core::ffi::c_void;
 use core::panic::PanicInfo;
+use core::sync::atomic::{AtomicPtr, Ordering};
 
 type Handle = *mut c_void;
 type Status = usize;
+
+#[repr(C)]
+struct TextOutput {
+	_reset: usize,
+	output_string: extern "efiapi" fn(*mut c_void, *const u16) -> Status,
+}
+
+static CONSOLE_OUT: AtomicPtr<c_void> = AtomicPtr::new(core::ptr::null_mut());
 
 const SUCCESS: Status = 0;
 const ALLOCATE_ANY_PAGES: u32 = 0;
@@ -439,6 +448,7 @@ extern "efiapi" fn efi_main(image_handle: Handle, system_table: *mut SystemTable
 		if boot_services.is_null() {
 			halt();
 		}
+		CONSOLE_OUT.store((*system_table).console_out, Ordering::Release);
 		let boot_services = &mut *boot_services;
 		let mut boot_info = configure_frame_buffer(boot_services);
 		preparar_aps(boot_services, &mut boot_info);
@@ -1162,9 +1172,24 @@ fn panic(_info: &PanicInfo) -> ! {
 }
 
 fn halt() -> ! {
+	unsafe { imprimir(b"RustOS: falha no carregador UEFI\r\n") };
 	loop {
 		core::hint::spin_loop();
 	}
+}
+
+unsafe fn imprimir(texto: &[u8]) {
+	let console = CONSOLE_OUT.load(Ordering::Acquire);
+	if console.is_null() {
+		return;
+	}
+	let mut buffer = [0u16; 128];
+	let length = texto.len().min(buffer.len() - 1);
+	for (index, byte) in texto[..length].iter().enumerate() {
+		buffer[index] = u16::from(*byte);
+	}
+	let output = &*console.cast::<TextOutput>();
+	(output.output_string)(console, buffer.as_ptr());
 }
 
 unsafe fn exit_boot_services(
@@ -1690,6 +1715,7 @@ unsafe fn load_elf_kernel(
 		) != SUCCESS
 			|| address != physical_address
 		{
+			imprimir(b"RustOS: falha ao reservar a memoria do nucleo\r\n");
 			halt();
 		}
 		core::ptr::copy_nonoverlapping(

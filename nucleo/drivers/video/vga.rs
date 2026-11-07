@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Seleciona e valida modos de video framebuffer oferecidos pelo GOP UEFI.
 
 pub const PIXEL_RGB_RESERVED_8: u32 = 0;

@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Identifica as tabelas ACPI recebidas do UEFI e lista cada uma em uma linha.
 use core::fmt::{self, Write};
 

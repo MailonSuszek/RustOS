@@ -4,7 +4,7 @@
 **Funcao:** Documenta a estrutura, os requisitos, a compilacao e a execucao do RustOS.<br>
 **Nome:** RustOS Beta  
 **Versao:** v0.1  
-**Construcao:** 0.12.2026<br>
+**Construcao:** 0.13.2026<br>
 **Arquitetura:** x86-64  
 **Boot:** UEFI
 
@@ -20,7 +20,7 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `nucleo/cpu/apic.rs`: habilita o APIC local em modo xAPIC ou x2APIC.
 - `nucleo/cpu/idt.rs`: cria e carrega uma IDT com 256 vetores; o vetor NMI conta eventos e retorna, enquanto os demais ainda usam o handler fatal.
 - `nucleo/cpu/smp_context.rs` e `nucleo/cpu/smp.rs`: iniciam APs habilitados na MADT usando INIT/SIPI, um trampolim abaixo de 1 MiB, pilhas independentes e a IDT compartilhada.
-- `nucleo/cpu/ioapic.rs`: localiza os IOAPICs pela MADT, enumera processadores locais e interpreta regras de NMI por UID.
+- `nucleo/cpu/ioapic.rs`: localiza e configura os IOAPICs pela MADT (ID, versão, endereço físico e intervalo GSI), enumera processadores locais, interpreta regras de NMI por UID e fornece resumo MADT (endereço do Local APIC, processadores, controladores, ISOs, NMIs) e detecção de HPET.
 - `nucleo/cpu/pm_timer.rs`: localiza o PM-Timer na FADT, valida registros I/O ou memoria e registra largura, frequencia e contador.
 - `nucleo/cpu/interrupcoes.rs`: carrega a IDT sem mensagem e mantem as interrupcoes da CPU desabilitadas.
 - `nucleo/cpu/tsc.rs`: calibra o TSC contra o temporizador PIT, mantem a frequencia em cache para o relogio interno e exibe a velocidade detectada da CPU.
@@ -51,7 +51,7 @@ RustOS e um projeto experimental dedicado a explorar o desenvolvimento de um sis
 - `inicio/inicio.img`: imagem FAT de boot que contem `EFI/BOOT/BOOTX64.EFI` e `inicio.so` na raiz.
 - `compilar.sh`: compila os estagios UEFI e o nucleo freestanding, e gera a imagem FAT e a ISO.
 - `.vscode/tasks.json`: tarefas para compilar e executar no QEMU.
-- `RustOS_Beta_v0.1_Construcao_0.12.2026.iso`: imagem ISO gerada na raiz do projeto.
+- `RustOS_Beta_v0.1_Construcao_0.13.2026.iso`: imagem ISO gerada na raiz do projeto.
 
 Os estagios sao binarios separados: o firmware inicia `BOOTX64.EFI`, que carrega `inicio.so` de `inicio.img`; `inicio.so` procura e carrega `nucleo/Rust` diretamente dos setores da ISO 9660. O nucleo recebe do carregador os dados do framebuffer e, apos a transferencia, executa sem os servicos de boot UEFI.
 
@@ -68,14 +68,14 @@ O nome `NUCLEO/RUST` pode aparecer como `NUCLEO/RUST.;1` ao listar a ISO, devido
 Na tela, o nucleo mostra as etapas nesta ordem:
 
 ```text
-{   1} RustOS Beta v0.1 Construção 0.12.2026
+{   1} RustOS Beta v0.1 Construção 0.13.2026
 {   2} Caminho: nucleo/Rust
 {   3} Organização de segurança de execução
 {   4} Lista de intervalos físicos de memoria
 {   5} <endereço inicial>-<endereço final> disponivel RAM
 {próximo número} <endereço inicial>-<endereço final> reservada <tipo de memoria>
 {próximo número} RAM proteção ativo
-{próximo número} APCI iniciado
+{próximo número} APIC local iniciado e configurado
 {próximo número} EFI: UEFI *numeror da versão*
 {próximo número} UEFI tabelas: ACPI2=0x..., SMBIOS=0x...
 {próximo número} UEFI tabelas: UEFI=0x...
@@ -123,11 +123,19 @@ Na tela, o nucleo mostra as etapas nesta ordem:
 {próximo número} PM-Timer: porta I/O <endereco>, <largura> bits, 3579545 Hz
 {próximo número} PM-Timer contador inicial: <contador>
 {próximo número} NMIs tratados: <quantidade>
+{próximo número} IOAPIC: ID APIC <id>, versão 0x<versao>, endereço 0x<endereco>, GSI <base>-<fim>
+{próximo número} MADT: endereço do Local APIC 0x<endereco>
+{próximo número} MADT: processadores identificados e habilitados: <quantidade>
+{próximo número} MADT: controladores de interrupção IOAPIC: <quantidade>
+{próximo número} MADT: redirecionamentos de interrupção (ISO): <quantidade>
+{próximo número} MADT: fontes NMI configuradas: <quantidade>
+{próximo número} Temporizador PM: porta E/S <endereco>, <largura> bits, 3579545 Hz
+{próximo número} HPET: disponivel
 ```
 
 O numero da versao EFI e obtido de `SystemTable.Header.Revision`; o exemplo `2.70` pode variar conforme o firmware. O carregador consulta os modos GOP do dispositivo de video, mantem 640x480 quando valido e suportado, ou escolhe o modo valido de maior area de pixels. O tamanho do framebuffer e calculado pelo stride e pela altura, com verificacao de overflow e do tamanho informado pelo firmware. O modo, stride, formato e endereco do framebuffer sao passados ao nucleo. Depois dessa linha, o carregador passa ao nucleo os enderecos das tabelas UEFI, identificando ACPI e SMBIOS quando reconhecidos. Todas as linhas recebem numeracao sequencial, uma por uma, inclusive as de continuacao quando a lista de tabelas nao cabe em uma unica linha. O nucleo tambem usa a MADT ACPI para localizar os IOAPICs. O CRNG usa ChaCha20 com uma semente de 256 bits obtida do protocolo RNG do UEFI, de RDSEED/RDRAND ou de TPM 2.0 via protocolo TCG2; sem uma fonte disponivel, a inicializacao falha em vez de usar uma semente previsivel.
 
-No começo da inicializacao, logo depois das tres linhas de identificacao, o nucleo lista todos os intervalos fisicos do mapa UEFI em ordem crescente de endereco inicial, um por linha. Cada intervalo mostra os enderecos inicial e final; descritores de memoria convencional aparecem como `disponivel RAM` e os demais como `reservada` com seu tipo, incluindo MMIO. Depois da lista, as outras etapas de inicializacao continuam. As linhas de memoria e ACPI mantem a ordem atual; apos as paginas inacessiveis, o fim do boot exibe o estado SMP, as regras NMI aplicadas por processador, a identificacao e a leitura inicial do PM-Timer e o total de NMIs recebidos. A mensagem de páginas grandes informa 1 GiB quando `PDPE1GB` e suportado; caso contrario, informa o fallback de 2 MiB. Como a imagem do ramdisk ainda nao existe, a linha do ramdisk mostra apenas `ramdisk não encontrado`; o endereço real será exibido quando ele for carregado. A linha de RAM fisica soma os descritores UEFI de memoria convencional limitados ao alcance de 64 GiB do alocador RustOS. `nucleo/cpu/tsc.rs` calibra o TSC contra o PIT por cerca de 27 ms e exibe a velocidade detectada; se o PIT nao responder, a frequencia e obtida pelas folhas CPUID `0x15` e `0x16`.
+No começo da inicializacao, logo depois das tres linhas de identificacao, o nucleo lista todos os intervalos fisicos do mapa UEFI em ordem crescente de endereco inicial, um por linha. Cada intervalo mostra os enderecos inicial e final; descritores de memoria convencional aparecem como `disponivel RAM` e os demais como `reservada` com seu tipo, incluindo MMIO. Depois da lista, as outras etapas de inicializacao continuam. As linhas de memoria e ACPI mantem a ordem atual; apos as paginas inacessiveis, o fim do boot exibe o estado SMP, as regras NMI aplicadas por processador, a identificacao e a leitura inicial do PM-Timer, o total de NMIs recebidos e, por último, o resumo do IOAPIC e das informações ACPI/MADT (endereço do Local APIC, processadores, controladores IOAPIC, redirecionamentos ISO, fontes NMI), além do temporizador PM e da disponibilidade do HPET — cada informação em uma linha, em português. A mensagem de páginas grandes informa 1 GiB quando `PDPE1GB` e suportado; caso contrario, informa o fallback de 2 MiB. Como a imagem do ramdisk ainda nao existe, a linha do ramdisk mostra apenas `ramdisk não encontrado`; o endereço real será exibido quando ele for carregado. A linha de RAM fisica soma os descritores UEFI de memoria convencional limitados ao alcance de 64 GiB do alocador RustOS. `nucleo/cpu/tsc.rs` calibra o TSC contra o PIT por cerca de 27 ms e exibe a velocidade detectada; se o PIT nao responder, a frequencia e obtida pelas folhas CPUID `0x15` e `0x16`.
 
 Na etapa de tabelas ACPI, mantida em sua posicao atual na sequencia, o nucleo identifica as tabelas disponibilizadas pela UEFI pelo RSDP entregue pelo carregador: valida a assinatura e o checksum do RSDT/XSDT, preferindo a XSDT de 64 bits, e percorre cada entrada. Cada tabela com cabecalho e checksum validos aparece em uma propria linha, com assinatura, endereco fisico, tamanho e fabricante, na ordem do firmware; tabelas invalidas sao ignoradas. Quando nao ha RSDP a linha informa `Tabelas ACPI: RSDP ausente`, e quando nenhuma tabela e valida a linha informa `Tabelas ACPI: nenhuma encontrada`.
 

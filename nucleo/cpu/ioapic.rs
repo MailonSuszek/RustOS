@@ -1,6 +1,6 @@
 // Nome: RustOS Beta
 // Versao: v0.1
-// Construcao: 0.12.2026
+// Construcao: 0.13.2026
 // Funcao: Localiza e configura os controladores IOAPIC via ACPI.
 use core::ptr;
 
@@ -14,7 +14,8 @@ const MAX_ACPI_TABLE_SIZE: usize = 1024 * 1024;
 const MAX_IDENTITY_MAPPED_ADDRESS: u64 = 64 * 1024 * 1024 * 1024;
 const MAX_NMI_SOURCES: usize = 256;
 const IOAPIC_REGISTER_SELECT: usize = 0;
-const IOAPIC_REGISTER_WINDOW: usize = 4;
+const IOAPIC_REGISTER_WINDOW: usize = 0x10;
+const IOAPIC_ID_REGISTER: u32 = 0;
 const IOAPIC_VERSION_REGISTER: u32 = 1;
 const IOAPIC_REDIRECTION_BASE: u32 = 0x10;
 const IOAPIC_MASKED: u32 = 1 << 16;
@@ -29,8 +30,6 @@ pub(super) enum ErroIoApic {
 	EnderecoInvalido,
 	MapeamentoVirtual(virtual_memory::ErroVirtual),
 	ProcessadoresDemais,
-	FontesNmiDemais,
-	EntradaNmiInvalida,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,6 +45,78 @@ pub(super) struct FonteNmi {
 	pub lint: u8,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct IoApicResumo {
+	pub id: u8,
+	pub version: u8,
+	pub address: u64,
+	pub gsi_base: u32,
+	pub gsi_end: u32,
+	pub count: usize,
+}
+#[derive(Clone, Copy)]
+pub(super) struct MadtResumo {
+	pub local_apic_address: u64,
+	pub processadores: usize,
+	pub ioapics: usize,
+	pub overrides: usize,
+	pub fontes_nmi: usize,
+}
+
+pub(super) fn resumo_madt(rsdp: *const u8) -> Result<MadtResumo, ErroIoApic> {
+	let madt = localizar_tabela(rsdp, b"APIC")?;
+	let table_length = ler_u32(madt, 4) as usize;
+	let local_apic_address = u64::from(ler_u32(madt, 36));
+	let mut offset = MADT_HEADER_SIZE;
+	let mut processadores = 0usize;
+	let mut ioapics = 0usize;
+	let mut overrides = 0usize;
+	let mut fontes_nmi = 0usize;
+
+	while offset < table_length {
+		if table_length - offset < 2 {
+			return Err(ErroIoApic::TabelaAcpiInvalida);
+		}
+		let entry_type = ler_u8(madt, offset);
+		let entry_length = usize::from(ler_u8(madt, offset + 1));
+		if entry_length < 2 || entry_length > table_length - offset {
+			return Err(ErroIoApic::TabelaAcpiInvalida);
+		}
+		match entry_type {
+			0 if entry_length >= 8 => {
+				let flags = ler_u32(madt, offset + 4);
+				if flags & 1 != 0 || flags & 2 != 0 {
+					processadores += 1;
+				}
+			}
+			1 if entry_length >= 12 => ioapics += 1,
+			2 if entry_length >= 10 => overrides += 1,
+			4 if entry_length >= 6 => fontes_nmi += 1,
+			9 if entry_length >= 16 => {
+				let flags = ler_u32(madt, offset + 8);
+				if flags & 1 != 0 || flags & 2 != 0 {
+					processadores += 1;
+				}
+			}
+			10 if entry_length >= 12 => fontes_nmi += 1,
+			_ => {}
+		}
+		offset += entry_length;
+	}
+	Ok(MadtResumo {
+		local_apic_address,
+		processadores,
+		ioapics,
+		overrides,
+		fontes_nmi,
+	})
+}
+
+pub(super) fn hpet_disponivel(rsdp: *const u8) -> bool {
+	localizar_tabela(rsdp, b"HPET").is_ok()
+}
+
+
 impl FonteNmi {
 	const VAZIA: Self = Self {
 		processor_uid: u32::MAX,
@@ -54,11 +125,12 @@ impl FonteNmi {
 	};
 }
 
-pub(super) fn inicializar(rsdp: *const u8) -> Result<(), ErroIoApic> {
+pub(super) fn inicializar(rsdp: *const u8) -> Result<IoApicResumo, ErroIoApic> {
 	let madt = localizar_tabela(rsdp, b"APIC")?;
 	let table_length = ler_u32(madt, 4) as usize;
 	let mut offset = MADT_HEADER_SIZE;
-	let mut ioapic_count = 0;
+	let mut ioapic_count = 0usize;
+	let mut resumo = None;
 
 	while offset < table_length {
 		if table_length - offset < 2 {
@@ -74,16 +146,19 @@ pub(super) fn inicializar(rsdp: *const u8) -> Result<(), ErroIoApic> {
 				return Err(ErroIoApic::TabelaAcpiInvalida);
 			}
 			let address = u64::from(ler_u32(madt, offset + 4));
-			inicializar_controlador(address)?;
+			let gsi_base = ler_u32(madt, offset + 8);
+			let info = inicializar_controlador(address, gsi_base)?;
+			if resumo.is_none() || gsi_base == 0 {
+				resumo = Some(info);
+			}
 			ioapic_count += 1;
 		}
 		offset += entry_length;
 	}
 
-	if ioapic_count == 0 {
-		return Err(ErroIoApic::IoApicAusente);
-	}
-	Ok(())
+	let mut resumo = resumo.ok_or(ErroIoApic::IoApicAusente)?;
+	resumo.count = ioapic_count;
+	Ok(resumo)
 }
 
 pub(super) fn processadores(
@@ -168,42 +243,34 @@ pub(super) fn fontes_nmi(
 			return Err(ErroIoApic::TabelaAcpiInvalida);
 		}
 		let source = match entry_type {
-			4 => {
-				if entry_length < 6 {
-					return Err(ErroIoApic::TabelaAcpiInvalida);
-				}
-				Some(FonteNmi {
-					processor_uid: match ler_u8(madt, offset + 2) {
-						u8::MAX => u32::MAX,
-						uid => u32::from(uid),
-					},
-					flags: ler_u16(madt, offset + 3),
-					lint: ler_u8(madt, offset + 5),
-				})
-			}
-			10 => {
-				if entry_length < 12 {
-					return Err(ErroIoApic::TabelaAcpiInvalida);
-				}
-				Some(FonteNmi {
-					processor_uid: ler_u32(madt, offset + 4),
-					flags: ler_u16(madt, offset + 2),
-					lint: ler_u8(madt, offset + 8),
-				})
-			}
+			4 if entry_length >= 6 => Some(FonteNmi {
+				processor_uid: match ler_u8(madt, offset + 2) {
+					u8::MAX => u32::MAX,
+					uid => u32::from(uid),
+				},
+				flags: ler_u16(madt, offset + 3),
+				lint: ler_u8(madt, offset + 5),
+			}),
+			10 if entry_length >= 12 => Some(FonteNmi {
+				processor_uid: ler_u32(madt, offset + 4),
+				flags: ler_u16(madt, offset + 2),
+				lint: ler_u8(madt, offset + 8),
+			}),
 			_ => None,
 		};
-		if let Some(source) = source {
-			if source.lint > 1 {
-				return Err(ErroIoApic::EntradaNmiInvalida);
-			}
-			if count == fontes.len() {
-				return Err(ErroIoApic::FontesNmiDemais);
-			}
-			fontes[count] = source;
-			count += 1;
-		}
 		offset += entry_length;
+		// Uma entrada NMI defeituosa nao deve impedir o uso das demais.
+		let Some(source) = source else {
+			continue;
+		};
+		if source.lint > 1 || !flags_nmi_validas(source.flags) {
+			continue;
+		}
+		if count == fontes.len() {
+			return Ok(count);
+		}
+		fontes[count] = source;
+		count += 1;
 	}
 	Ok(count)
 }
@@ -211,15 +278,28 @@ pub(super) fn fontes_nmi(
 pub(super) const NMI_SOURCE_CAPACITY: usize = MAX_NMI_SOURCES;
 pub(super) const NMI_SOURCE_EMPTY: FonteNmi = FonteNmi::VAZIA;
 
-fn inicializar_controlador(address: u64) -> Result<(), ErroIoApic> {
+fn flags_nmi_validas(flags: u16) -> bool {
+	let polaridade = flags & 0b11;
+	let gatilho = (flags >> 2) & 0b11;
+	flags & !0x0f == 0 && polaridade != 0b10 && gatilho != 0b10
+}
+
+fn inicializar_controlador(
+	address: u64,
+	gsi_base: u32,
+) -> Result<IoApicResumo, ErroIoApic> {
 	if address == 0 || address % 4096 != 0 {
 		return Err(ErroIoApic::EnderecoInvalido);
 	}
 	virtual_memory::mapear_dispositivo(address, 4096)
 		.map_err(ErroIoApic::MapeamentoVirtual)?;
 
+	let id = unsafe { ler_registro(address, IOAPIC_ID_REGISTER) };
 	let version = unsafe { ler_registro(address, IOAPIC_VERSION_REGISTER) };
 	let last_redirection_entry = (version >> 16) & 0xff;
+	let gsi_end = gsi_base
+		.checked_add(last_redirection_entry)
+		.ok_or(ErroIoApic::TabelaAcpiInvalida)?;
 	for index in 0..=last_redirection_entry {
 		let low_register = IOAPIC_REDIRECTION_BASE + index * 2;
 		unsafe {
@@ -231,7 +311,14 @@ fn inicializar_controlador(address: u64) -> Result<(), ErroIoApic> {
 			);
 		}
 	}
-	Ok(())
+	Ok(IoApicResumo {
+		id: ((id >> 24) & 0x0f) as u8,
+		version: (version & 0xff) as u8,
+		address,
+		gsi_base,
+		gsi_end,
+		count: 1,
+	})
 }
 
 pub(super) fn localizar_tabela(
